@@ -22,6 +22,22 @@ class TickerKind(Enum):
 class Ticker(NamedTuple):
     symbol: str
     kind: TickerKind
+    security_id: str
+    multiplier: int
+    conid: str = ''
+    exchange: str = ''
+    description: str = ''
+    # periods =
 
     def __str__(self):
-        return f'{self.symbol} ({self.kind})'
+        return f'{self.symbol} {self.security_id} ({self.kind}) on {self.exchange}'
+
+    def __eq__(self, other):
+        if isinstance(other, Ticker):
+            return (
+                    self.kind == other.kind and
+                    self.security_id == other.security_id and
+                    self.multiplier == other.multiplier and
+                    self.conid == other.conid
+            )
+        return False

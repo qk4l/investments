@@ -1,46 +1,29 @@
-import datetime
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import pandas
 
 from investments.calculators import compute_total_cost
+from investments.currency import Currency
 from investments.money import Money
 from investments.ticker import Ticker
-from investments.trade import Trade
+from investments.trade import Trade, FinishedTrade
 
 
-class FinishedTrade(NamedTuple):
-    N: int
-    ticker: Ticker
-
-    # дата сделки, нужна для расчёта комиссии в рублях на дату
-    trade_date: datetime.datetime
-
-    # дата поставки, нужна для расчёта цены сделки в рублях на дату
-    settle_date: datetime.date
-
-    # количество бумаг, положительное для операции покупки, отрицательное для операции продажи
-    quantity: int
-
-    # цена одной бумаги, всегда положительная
-    price: Money
-
-    # комиссия за сделку с одной бумагой, всегда отрицательная
-    fee_per_piece: Money
-
-    @property
-    def fields(self) -> Tuple[str, ...]:
-        return self._fields
-
-
-class PortfolioElement(NamedTuple):
+@dataclass
+class PortfolioElement:
     ticker: Ticker
     quantity: int
+    average_price: Money = None
 
 
 class TradesAnalyzer:
     def __init__(self, trades: Iterable[Trade]):
         self._finished_trades: List[FinishedTrade] = []
+        self._trades: List[Trade] = []
         self._portfolio: List[PortfolioElement] = []
+        self.trades = pandas.DataFrame(trades)
         self.analyze_trades(trades)
 
     def analyze_trades(self, trades: Iterable[Trade]):
@@ -49,6 +32,8 @@ class TradesAnalyzer:
         active_trades = _TradesFIFO()
 
         for trade in trades:
+            self._trades.append(trade)
+
             total_profit = None
 
             quantity = trade.quantity
@@ -62,10 +47,13 @@ class TradesAnalyzer:
 
                 total_cost = compute_total_cost(q, matched_trade.price, matched_trade.fee_per_piece)
 
-                finished_trade = FinishedTrade(
-                    finished_trade_id, trade.ticker, matched_trade.trade_date, matched_trade.settle_date, q,
-                    matched_trade.price, matched_trade.fee_per_piece,
-                )
+                finished_trade = FinishedTrade(N=finished_trade_id, ticker=trade.ticker,
+                                               trade_date=matched_trade.trade_date,
+                                               settle_date=matched_trade.settle_date,
+                                               quantity=q, price=matched_trade.price,
+                                               fee=matched_trade.fee
+                                               )
+
                 self._finished_trades.append(finished_trade)
 
                 q = -1 * q
@@ -81,20 +69,34 @@ class TradesAnalyzer:
             if total_profit is not None:
                 q = trade.quantity - quantity
                 self._finished_trades.append(FinishedTrade(
-                    finished_trade_id,
-                    trade.ticker,
-                    trade.trade_date,
-                    trade.settle_date,
-                    q,
-                    trade.price,
-                    trade.fee_per_piece,
+                    N=finished_trade_id, ticker=trade.ticker,
+                    trade_date=trade.trade_date,
+                    settle_date=trade.settle_date,
+                    quantity=q, price=trade.price, fee=trade.fee
                 ))
                 finished_trade_id += 1
 
             if quantity != 0:
                 active_trades.put(quantity, trade)
 
-        self._portfolio = [PortfolioElement(quantity=element['quantity'], ticker=element['ticker']) for element in active_trades.unmatched()]
+        # Create dictionaries to track total value and total quantity for each symbol
+        total_value = {}
+        total_quantity = {}
+
+        # Calculate total value and total quantity for each symbol
+        for ticker, group in self.trades.groupby('ticker'):
+            total_value[ticker] = (group['price'] * group['quantity']).sum()
+            total_quantity[ticker] = group['quantity'].sum()
+
+        # Calculate the average holding price for each symbol
+        average_holding_price = {}
+        for ticker in total_value:
+            if total_quantity[ticker]:
+                average_holding_price[ticker] = total_value[ticker] / total_quantity[ticker]
+
+        self._portfolio = [PortfolioElement(quantity=element['quantity'], ticker=element['ticker'],
+                                            average_price=average_holding_price.get(element['ticker'])) for element in
+                           active_trades.unmatched()]
 
     @property
     def finished_trades(self) -> List[FinishedTrade]:

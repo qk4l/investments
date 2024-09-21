@@ -18,3 +18,6 @@ class Interest(NamedTuple):
 
     def __str__(self):
         return f'{self.date} ({self.amount} {self.description})'
+
+    def __repr__(self):
+        return f'{self.date} ({self.amount} {self.description})'

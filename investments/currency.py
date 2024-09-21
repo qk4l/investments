@@ -11,9 +11,9 @@ class Currency(Enum):
 
     """
 
-    USD = (('$', 'USD'), '840', 'R01235')
-    RUB = (('₽', 'RUB', 'RUR'), '643', '')
-    EUR = (('€', 'EUR'), '978', 'R01239')
+    USD = (('USD', 'USD'), '840', 'R01235')
+    RUB = (('RUB', 'RUB', 'RUR'), '643', '')
+    EUR = (('EUR', 'EUR'), '978', 'R01239')
     AUD = (('AUD',), '036', 'R01010')
     GBP = (('GBP',), '826', 'R01035')
     CAD = (('CAD',), '124', 'R01350')
@@ -30,6 +30,7 @@ class Currency(Enum):
     SEK = (('SEK',), '752', 'R01770')
     CHF = (('CHF',), '756', 'R01775')
     TRY = (('TRY',), '949', 'R01700J')
+    CNH = (('CNH',), '156', 'R01375')
 
     # unknown currency for cbr.ru
     # CNH = (('CNH',), 'unknown', 'unknown')

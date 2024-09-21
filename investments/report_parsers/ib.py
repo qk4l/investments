@@ -1,9 +1,9 @@
 import csv
-import datetime
 import logging
 import re
-from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple
+from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple, Callable
 
+from datetime import datetime
 from investments.cash import Cash
 from investments.currency import Currency
 from investments.dividend import Dividend
@@ -14,23 +14,24 @@ from investments.ticker import Ticker, TickerKind
 from investments.trade import Trade
 
 
-def _parse_datetime(strval: str) -> datetime.datetime:
-    return datetime.datetime.strptime(strval.replace(' ', ''), '%Y-%m-%d,%H:%M:%S')
+def _parse_datetime(strval: str) -> datetime:
+    return datetime.strptime(strval.replace(' ', ''), '%Y-%m-%d,%H:%M:%S')
 
 
 def _parse_date(strval: str) -> datetime.date:
-    return datetime.datetime.strptime(strval, '%Y-%m-%d').date()
+    return datetime.strptime(strval, '%Y-%m-%d').date()
 
 
 def _parse_trade_quantity(strval: str) -> int:
     return int(strval.replace(',', ''))
 
 
-def _parse_dividend_description(description: str) -> Tuple[str, str]:
-    m = re.match(r'^(\w+)\s*\(\w+\) (Cash Dividend|Payment in Lieu of Dividend|Choice Dividend)', description)
+def _parse_dividend_description(description: str) -> Tuple[str, str, str]:
+    # GSF(GB00BG0P0V73) Cash Dividend GBP 0.02 per Share (Ordinary Dividend)
+    m = re.match(r'^(\w+)\s*\((\w+)\) (Cash Dividend|Payment in Lieu of Dividend|Choice Dividend|Stock Dividend)', description)
     if m is None:
         raise Exception(f'unsupported dividend description "{description}"')
-    return m.group(1), m.group(2)
+    return m.group(1), m.group(2), m.group(3)
 
 
 def _parse_tickerkind(strval: str):
@@ -58,47 +59,66 @@ class NamedRowsParser:
 
 class TickersStorage:
     def __init__(self):
-        self._tickers = set()
+        self._tickers = {}  # type dict[str: Ticker]
         self._conid_to_ticker = {}
         self._description_to_ticker = {}
-        self._multipliers = {}
+        self._symbols = {}  # type dict[str: Ticker]
+        # TODO: Some instruments could change their symbols over time.
+        #  Try to manage assume that separate annual reports does not have this
+        self._conflict_symbols = {}  # type dict[str: {datetime: Ticker}]
 
-    def put(self, *, symbol: str, conid: str, description: str, kind: TickerKind, multiplier: int):
-        ticker = Ticker(symbol, kind)
-        if ticker not in self._tickers:
+    def put(self, *, symbol: str, conid: str, description: str, kind: TickerKind,
+            multiplier: int, security_id: str, exchange: str):
+        ticker = Ticker(symbol=symbol, kind=kind, security_id=security_id,
+                        conid=conid, exchange=exchange, multiplier=multiplier, description=description)
+
+        if ticker.security_id not in self._tickers:
             assert conid not in self._conid_to_ticker
-            assert description not in self._description_to_ticker
-            assert ticker not in self._multipliers
-            self._tickers.add(ticker)
+            # if description in self._description_to_ticker:
+            #     description = f"{symbol}: {description}"
+            # assert description not in self._description_to_ticker
+            try:
+                assert ticker.symbol not in self._symbols
+            except AssertionError:
+                logging.warning(f"There are two Tickets with same symbols: {ticker} and {self._symbols[ticker.symbol]}")
+                logging.warning(f"Disable get_ticker_by_symbol() for that symbol")
+                self._symbols[ticker.symbol] = None
+                if ticker.symbol in self._conflict_symbols:
+                    self._conflict_symbols[ticker.symbol]
+            else:
+                self._symbols[ticker.symbol] = ticker
+
+            self._tickers[ticker.security_id] = ticker
             self._conid_to_ticker[conid] = ticker
             self._description_to_ticker[description] = ticker
-            self._multipliers[ticker] = multiplier
+            # self._multipliers[ticker] = multiplier
             return
 
-        assert self._conid_to_ticker[conid] == ticker
+        ticker_in_storage = self._tickers[ticker.security_id]  # type: Ticker
+        assert ticker_in_storage == ticker
 
-        description_ticker = self._description_to_ticker.get(description)
-        if description_ticker is not None:
-            assert description_ticker == ticker
-        else:
-            self._description_to_ticker[description] = ticker
+    def get_ticker_by_symbol(self, symbol: str, dt: datetime = None) -> Ticker:
+        ticker = self._symbols.get(symbol, None)
+        if ticker is None:
+            logging.info(f"Can not find Ticker by symbol {symbol}")
+            logging.info(f"Check may be it is conflict symbol")
+            if dt is not None and symbol in self._conflict_symbols:
+                ticker = self._conflict_symbols[symbol].get(dt.year, None)
+                if ticker is not None:
+                    return ticker
+            raise KeyError(symbol)
+        return ticker
 
-        assert self._multipliers[ticker] == multiplier
+    def get_ticker(self, symbol: str, security_id: str, kind: TickerKind) -> Ticker:
+        if security_id in self._tickers:
+            return self._tickers[security_id]
+        logging.info(f"Can not find Ticker by security_id {security_id}")
 
-    def get_ticker(self, name: str, kind: TickerKind):
-        ticker = Ticker(name, kind)
-        if ticker in self._tickers:
+        ticker = self.get_ticker_by_symbol(symbol)
+        if ticker:
             return ticker
 
-        dtt = self._description_to_ticker.get(name)
-        if dtt is not None:
-            assert dtt.kind == kind
-            return dtt
-
-        raise KeyError(name)
-
-    def get_multiplier(self, ticker: Ticker):
-        return self._multipliers[ticker]
+        raise KeyError(symbol)
 
 
 class SettleDate(NamedTuple):
@@ -108,17 +128,17 @@ class SettleDate(NamedTuple):
 
 class SettleDatesStorage:
     def __init__(self) -> None:
-        self._settle_data: Dict[Tuple[str, datetime.datetime], SettleDate] = {}
+        self._settle_data: Dict[Tuple[str, datetime], SettleDate] = {}
 
     def __len__(self):
         return len(self._settle_data)
 
     def put(
-        self,
-        ticker: str,
-        operation_date: datetime.datetime,
-        settle_date: datetime.date,
-        order_id: str,
+            self,
+            ticker: str,
+            operation_date: datetime,
+            settle_date: datetime.date,
+            order_id: str,
     ):
         existing_item = self.get(ticker, operation_date)
         if existing_item:
@@ -127,16 +147,16 @@ class SettleDatesStorage:
         self._settle_data[(ticker, operation_date)] = SettleDate(order_id, settle_date)
 
     def get(
-        self,
-        ticker: str,
-        operation_date: datetime.datetime,
+            self,
+            ticker: str,
+            operation_date: datetime,
     ) -> Optional[SettleDate]:
         return self._settle_data.get((ticker, operation_date))
 
     def get_date(
-        self,
-        ticker: str,
-        operation_date: datetime.datetime,
+            self,
+            ticker: str,
+            operation_date: datetime,
     ) -> Optional[datetime.date]:
         existing_settle_item = self.get(ticker, operation_date)
         if existing_settle_item:
@@ -146,6 +166,8 @@ class SettleDatesStorage:
 
 class InteractiveBrokersReportParser:
     def __init__(self) -> None:
+        self.account: str
+        self.account_type: str
         self._trades: List[Trade] = []
         self._dividends: List[Dividend] = []
         self._fees: List[Fee] = []
@@ -186,6 +208,13 @@ class InteractiveBrokersReportParser:
         # 1. parse tickers info
         for ac_fname in activity_csvs:
             with open(ac_fname, newline='') as ac_fh:
+                # logging.info(ac_fh.readline())
+                self._real_parse_activity_csv(csv.reader(ac_fh, delimiter=','), {
+                    # IB generate it =(
+                    '﻿Statement': self._parse_statement,
+                    'Statement': self._parse_statement,
+                })
+                ac_fh.seek(0)
                 self._real_parse_activity_csv(csv.reader(ac_fh, delimiter=','), {
                     'Financial Instrument Information': self._parse_instrument_information,
                 })
@@ -197,13 +226,15 @@ class InteractiveBrokersReportParser:
 
         # 3. parse everything else from activity (trades, dividends, ...)
         for activity_fname in activity_csvs:
+            logging.info(f"Parsing {activity_fname} file...")
             with open(activity_fname, newline='') as activity_fh:
                 self._real_parse_activity_csv(csv.reader(activity_fh, delimiter=','), {
                     'Trades': self._parse_trades,
                     'Dividends': self._parse_dividends,
                     'Withholding Tax': self._parse_withholding_tax,
                     'Deposits & Withdrawals': self._parse_deposits,
-                    # 'Account Information', 'Cash Report', 'Change in Dividend Accruals', 'Change in NAV',
+                    'Account Information': self._parse_account_information,
+                    # 'Cash Report', 'Change in Dividend Accruals', 'Change in NAV',
                     # 'Codes',
                     'Fees': self._parse_fees,
                     # 'Interest Accruals',
@@ -230,7 +261,9 @@ class InteractiveBrokersReportParser:
                 continue
             if f['TransactionType'] == 'TradeCancel':
                 continue
-
+            if f['TransactionType'] == 'FracShare':
+                logging.warning(f"Corporate action {f['TransactionType']} for {f['Symbol']}. Currently unsupported")
+                continue
             self._settle_dates.put(
                 f['Symbol'],
                 _parse_datetime(f['Date/Time']),
@@ -238,7 +271,19 @@ class InteractiveBrokersReportParser:
                 f['OrderID'],
             )
 
-    def _real_parse_activity_csv(self, csv_reader: Iterator[List[str]], parsers):
+    def _parse_statement(self, f: Dict[str, str]):
+        # Current we are interesting only in Period to resolve instrument's symbol duplication over time
+        # Statement	Data	Period	January 1, 2020 - December 31, 2020
+        if f['Field Name'] == 'Period':
+            # January 1, 2020 - December 31, 2020
+            date_format = "%B %d, %Y"
+            start_period, end_period = f['Field Value'].split('-')
+            self._current_parsed_period = (
+                datetime.strptime(start_period.strip(), date_format),
+                datetime.strptime(end_period.strip(), date_format)
+            )
+
+    def _real_parse_activity_csv(self, csv_reader: Iterator[List[str]], parsers: Dict[str, Callable]):
         nrparser = NamedRowsParser()
         for row in csv_reader:
             try:
@@ -267,6 +312,9 @@ class InteractiveBrokersReportParser:
             description=f['Description'],
             kind=_parse_tickerkind(f['Asset Category']),
             multiplier=int(f['Multiplier']),
+            security_id=f['Security ID'],
+            exchange=f['Listing Exch']
+            # period=self._current_parsed_period
         )
 
     def _parse_trades(self, f: Dict[str, str]):
@@ -275,27 +323,38 @@ class InteractiveBrokersReportParser:
             logging.warning(f'Skipping FOREX trade (not supported yet), your final report may be incorrect! {f}')
             return
 
-        ticker = self._tickers.get_ticker(f['Symbol'], ticker_kind)
-        quantity_multiplier = self._tickers.get_multiplier(ticker)
-        currency = Currency.parse(f['Currency'])
-
         dt = _parse_datetime(f['Date/Time'])
 
+        # TODO: Remove
+        if f['Symbol'] in ('FRT', 'SPCE'):
+            return
+        ticker = self._tickers.get_ticker_by_symbol(f['Symbol'], dt)
+        currency = Currency.parse(f['Currency'])
+
         settle_date = self._settle_dates.get_date(ticker.symbol, dt)
-        assert settle_date is not None
+        try:
+            assert settle_date is not None
+        except AssertionError:
+            if ticker.exchange == 'CORPACT':
+                logging.warning(f'Skipping CORPACT trade (not supported yet), your final report may be incorrect! {f}')
+                return
+            if 'spinoff' in ticker.description.lower():
+                logging.warning(f'Skipping SPINOFF trade (not supported yet), your final report may be incorrect! {f}')
+                return
+            raise
 
         self._trades.append(Trade(
             ticker=ticker,
             trade_date=dt,
             settle_date=settle_date,
-            quantity=_parse_trade_quantity(f['Quantity']) * quantity_multiplier,
+            quantity=_parse_trade_quantity(f['Quantity']) * ticker.multiplier,
             price=Money(f['T. Price'], currency),
             fee=Money(f['Comm/Fee'], currency),
         ))
 
     def _parse_withholding_tax(self, f: Dict[str, str]):
-        div_symbol, div_type = _parse_dividend_description(f['Description'])
-        ticker = self._tickers.get_ticker(div_symbol, TickerKind.Stock)
+        div_symbol, div_security_id, div_type = _parse_dividend_description(f['Description'])
+        ticker = self._tickers.get_ticker(div_symbol, div_security_id, TickerKind.Stock)
         date = _parse_date(f['Date'])
         tax_amount = Money(f['Amount'], Currency.parse(f['Currency']))
 
@@ -319,11 +378,14 @@ class InteractiveBrokersReportParser:
                 break
 
         if not found:
-            raise Exception(f'dividend not found for {ticker} on {date}')
+            # TODO: REMOVE
+            if div_symbol == 'FRT' or div_symbol == 'WPC' or div_symbol == 'DLR':
+                return
+            raise Exception(f'Account {self.account}: dividend not found for {ticker} on {date}')
 
     def _parse_dividends(self, f: Dict[str, str]):
-        div_symbol, div_type = _parse_dividend_description(f['Description'])
-        ticker = self._tickers.get_ticker(div_symbol, TickerKind.Stock)
+        div_symbol, div_security_id, div_type = _parse_dividend_description(f['Description'])
+        ticker = self._tickers.get_ticker(div_symbol, div_security_id, TickerKind.Stock)
         date = _parse_date(f['Date'])
         amount = Money(f['Amount'], Currency.parse(f['Currency']))
 
@@ -354,6 +416,12 @@ class InteractiveBrokersReportParser:
         date = _parse_date(f['Settle Date'])
         amount = Money(f['Amount'], currency)
         self._deposits_and_withdrawals.append((date, amount))
+
+    def _parse_account_information(self, f: Dict[str, str]):
+        if f['Field Name'] == 'Account':
+            self.account = f['Field Value']
+        if f['Field Name'] == 'Account Type':
+            self.account_type = f['Field Value']
 
     def _parse_fees(self, f: Dict[str, str]):
         currency = Currency.parse(f['Currency'])

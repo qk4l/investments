@@ -11,7 +11,8 @@ from investments.currency import Currency
 from investments.data_providers import cbr
 from investments.dividend import Dividend
 from investments.fees import Fee
-from investments.ibtax.report_presenter import NativeReportPresenter, ReportPresenter  # noqa: I001
+from investments.ibtax.report_presenter import NativeReportPresenter, ReportPresenter, \
+    GoogleSpeadSheetPresenter  # noqa: I001
 from investments.interests import Interest
 from investments.money import Money
 from investments.report_parsers.ib import InteractiveBrokersReportParser
@@ -36,7 +37,7 @@ def prepare_trades_report(finished_trades: List[FinishedTrade], cbr_client_usd: 
     trade_date_column = 'trade_date'
     tax_date_column = 'settle_date'
 
-    df = pandas.DataFrame(finished_trades, columns=finished_trades[0].fields)
+    df = pandas.DataFrame(finished_trades)
 
     df[trade_date_column] = df[trade_date_column].dt.normalize()
     df['date'] = df[trade_date_column].dt.date
@@ -82,7 +83,7 @@ def prepare_dividends_report(dividends: List[Dividend], cbr_client_usd: cbr.Exch
     df['rate'] = df.apply(lambda x: cbr_client_usd.get_rate(x['amount'].currency, x[operation_date_column]), axis=1)
     df['amount_rub'] = df.apply(lambda x: cbr_client_usd.convert_to_rub(x['amount'], x[operation_date_column]), axis=1)
     df['tax_paid_rub'] = df.apply(lambda x: cbr_client_usd.convert_to_rub(x['tax_paid'], x[operation_date_column]), axis=1)
-    df['tax_rate'] = df.apply(lambda x: round(x['tax_paid'].amount * 100 / x['amount'].amount, 2), axis=1)
+    # df['tax_rate'] = df.apply(lambda x: round(x['tax_paid'].amount * 100 / x['amount'].amount, 2), axis=1)
 
     return df
 
@@ -155,6 +156,7 @@ def main() -> None:
 
     available_report_types: Dict[str, Type[ReportPresenter]] = {
         'native': NativeReportPresenter,
+        'gspreadsheet': GoogleSpeadSheetPresenter,
     }
 
     parser = argparse.ArgumentParser()
@@ -164,13 +166,13 @@ def main() -> None:
     parser.add_argument('--years', type=lambda x: [int(v.strip()) for v in x.split(',')], default=[], help='comma separated years for final report, omit for all')
     parser.add_argument('--verbose', nargs='?', default=False, const=True, help='do not "prune" reversed dividends, show dividends tax percent, disable rounding & etc.')
     parser.add_argument('--quiet', nargs='?', default=False, const=True, help='suppress non-error messages')
-    parser.add_argument('--report-type', type=str, default='native', choices=available_report_types.keys(), help='report type [native by default]')
+    parser.add_argument('--report-type', type=str, default='gspreadsheet', choices=available_report_types.keys(), help='report type [native by default]')
     parser.add_argument('--save-to', type=str, default=None, help='filepath for save report')
 
     args = parser.parse_args()
 
     if args.verbose:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.DEBUG)
     elif args.quiet:
         logging.basicConfig(level=logging.ERROR)
 
@@ -201,7 +203,11 @@ def main() -> None:
     finished_trades = analyzer.finished_trades
     portfolio = analyzer.final_portfolio
 
-    trades_report = prepare_trades_report(finished_trades, cbr_client_usd) if finished_trades else None
+    # Upload all trades not only finished
+    if args.report_type == 'gspreadsheet':
+        trades_report = pandas.DataFrame(trades)
+    else:
+        trades_report = prepare_trades_report(finished_trades, cbr_client_usd) if finished_trades else None
 
     presenter = available_report_types[args.report_type](args.verbose, args.save_to)
     presenter.prepare_report(trades_report, dividends_report, fees_report, interests_report, portfolio, args.years)
