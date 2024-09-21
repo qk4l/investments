@@ -1,11 +1,15 @@
+import datetime
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Iterable, List, Optional, Union
 
 import pandas  # type: ignore
+from numpy import datetime64
 from tabulate import tabulate
 from weasyprint import CSS, HTML  # type: ignore
 
+from investments.defaults import GOOGLE_SHEET_ID
+from investments.google_api import GoogleAPI
 from investments.money import Money
 from investments.trades_fifo import PortfolioElement
 
@@ -132,7 +136,8 @@ class NativeReportPresenter(ReportPresenter):
     def _append_portfolio_report(self, portfolio: List[PortfolioElement]):
         self._start_new_page()
         self._append_header('PORTFOLIO')
-        self._append_output(self._append_table([[str(elem.ticker), elem.quantity] for elem in portfolio], headers=['Ticker', 'Quantity'], colalign=('left',)))
+        self._append_output(self._append_table([[str(elem.ticker), elem.quantity] for elem in portfolio],
+                                               headers=['Ticker', 'Quantity'], colalign=('left',)))
 
     def _append_dividends_report(self, dividends: pandas.DataFrame, year: int):
         dividends_by_year = dividends[dividends['tax_year'] == year].drop(columns=['tax_year'])
@@ -208,7 +213,8 @@ class NativeReportPresenter(ReportPresenter):
             trades_by_year.loc[idx, 'ticker'].kind,
             'expenses' if trades_by_year.loc[idx, 'quantity'] > 0 else 'income',
         ))['total_rub'].sum().reset_index()
-        trades_summary_presenter = trades_summary_presenter['index'].apply(pandas.Series).join(trades_summary_presenter).pivot(index=0, columns=1, values='total_rub')
+        trades_summary_presenter = trades_summary_presenter['index'].apply(pandas.Series).join(
+            trades_summary_presenter).pivot(index=0, columns=1, values='total_rub')
         trades_summary_presenter.index.name = ''
         trades_summary_presenter.columns.name = ''
         trades_summary_presenter['profit'] = trades_summary_presenter['income'] + trades_summary_presenter['expenses']
@@ -217,3 +223,70 @@ class NativeReportPresenter(ReportPresenter):
             apply_round_for_dataframe(trades_summary_presenter, {'expenses', 'income', 'profit'}, 2)
 
         self._append_output(self._append_table(trades_summary_presenter.reset_index()))
+
+
+class GoogleSpeadSheetPresenter(ReportPresenter):
+    def prepare_report(self, trades: Optional[pandas.DataFrame], dividends: Optional[pandas.DataFrame],
+                       fees: Optional[pandas.DataFrame], interests: Optional[pandas.DataFrame],
+                       portfolio: List[PortfolioElement], filter_years: List[int]):
+        google_api = GoogleAPI()
+
+        trades_drop_col = ['price_rub', 'fee_per_piece_rub', 'total_rub', 'N', 'tax_year', 'fee_rate',
+                           'profit_rub', 'fee_per_piece', 'settle_rate', 'settle_date', 'date']
+        dividend_drop_col = ['tax_year', 'N', 'rate', 'amount_rub', 'tax_paid_rub']
+
+        trades = trades.sort_values(by=['trade_date']).drop(columns=trades_drop_col, errors='ignore', axis=1)
+        dividends = dividends.sort_values(by=['date']).drop(columns=dividend_drop_col, axis=1)
+
+        trades['isin'] = trades['ticker'].apply(lambda x: x.security_id)
+        trades['eminent'] = trades['ticker'].apply(lambda x: x.description)
+
+        trades['ticker'] = trades['ticker'].apply(lambda x: x.symbol)
+
+        trades['currency'] = trades['price'].apply(lambda x: str(x.currency))
+
+        dividends['isin'] = dividends['ticker'].apply(lambda x: x.security_id)
+        dividends['eminent'] = dividends['ticker'].apply(lambda x: x.description)
+
+        dividends['ticker'] = dividends['ticker'].apply(lambda x: x.symbol)
+        dividends['currency'] = dividends['amount'].apply(lambda x: str(x.currency))
+
+        for df in (trades, dividends):
+            for col_name in df.keys():
+                col_value = df[col_name].values[0]
+                if isinstance(col_value, Money):
+                    df[col_name] = df[col_name].apply(lambda x: float(x.amount))
+                elif isinstance(col_value, (datetime.date, datetime64)):
+                    df[col_name] = df[col_name].apply(lambda x: x.strftime('%d.%m.%Y'))
+
+        trades_order = ['trade_date', 'ticker', 'eminent', 'quantity', 'price', 'fee', 'currency', 'isin']
+        trades = trades[trades_order]
+
+        trades_header = trades.columns.tolist()
+        trades_list = trades.values.tolist()  # type: list
+
+        dividends_order = ['date', 'ticker', 'eminent', 'amount', 'tax_paid', 'currency', 'isin']
+        dividends = dividends[dividends_order]
+
+        dividends_header = dividends.columns.tolist()
+        dividends_list = dividends.values.tolist()  # type: list
+
+        portfolio_list = []
+        portfolio_header = ['ticker', 'eminent', 'isin', 'exchange', 'quantity',
+                            'average_price', 'currency', 'total_price']
+
+        for i in portfolio:
+            portfolio_list.append([i.ticker.symbol, i.ticker.description,
+                                   i.ticker.security_id, i.ticker.exchange, i.quantity,
+                                   float(i.average_price.amount), i.average_price.currency.value[0][0], ''])
+
+        trades_list.insert(0, trades_header)
+        dividends_list.insert(0, dividends_header)
+        portfolio_list.insert(0, portfolio_header)
+
+        google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=trades_list,
+                              sheet_range='IB_Trades')
+        google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=dividends_list,
+                              sheet_range='IB_Dividends')
+        google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=portfolio_list,
+                              sheet_range='IB_Portfolio')
