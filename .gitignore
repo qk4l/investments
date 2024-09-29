@@ -5,3 +5,4 @@ __pycache__/
 cbrates_*.cache
 reports/
 dist/
+/.idea/*

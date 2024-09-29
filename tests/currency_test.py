@@ -21,8 +21,8 @@ def test_parse_failure():
 
 
 @pytest.mark.parametrize('currency,expected_repr', [
-    (Currency.USD, '$'),
-    (Currency.RUB, '₽'),
+    (Currency.USD, 'USD'),
+    (Currency.RUB, 'RUB'),
     (Currency.CAD, 'CAD'),
 ])
 def test_repr(currency: Currency, expected_repr: str):

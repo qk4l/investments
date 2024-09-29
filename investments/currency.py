@@ -11,8 +11,8 @@ class Currency(Enum):
 
     """
 
-    USD = (('USD', 'USD'), '840', 'R01235')
-    RUB = (('RUB', 'RUB', 'RUR'), '643', '')
+    USD = (('USD', '$', 'USD'), '840', 'R01235')
+    RUB = (('RUB', '₽', 'RUB', 'RUR'), '643', '')
     EUR = (('EUR', 'EUR'), '978', 'R01239')
     AUD = (('AUD',), '036', 'R01010')
     GBP = (('GBP',), '826', 'R01035')
@@ -42,6 +42,7 @@ class Currency(Enum):
         self._iso_code = iso_code
         self._cbr_code = cbr_code
         self.aliases = aliases
+        self.currency_name = aliases[0]
 
     @staticmethod
     def parse(search: str):

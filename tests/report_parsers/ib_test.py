@@ -10,7 +10,7 @@ from investments.currency import Currency
 from investments.fees import Fee
 from investments.interests import Interest
 from investments.money import Money
-from investments.report_parsers.ib import InteractiveBrokersReportParser, _parse_date, _parse_datetime
+from investments.report_parsers.ib import InteractiveBrokersReportParser, parse_date, parse_datetime
 from investments.ticker import TickerKind
 
 
@@ -224,19 +224,19 @@ def test_parse_trades_with_thousands_separator():
     """Сделки с более чем 1000 бумаг в отчёте форматируются с запятой как разделителем тысяч."""
     p = InteractiveBrokersReportParser()
 
-    lines = """Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code
-Financial Instrument Information,Data,Stocks,NOK,NOKIA CORP-SPON ADR,661513,US6549022043,NYSE,1,ADR,
+    lines = """Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code,
+Financial Instrument Information,Data,Stocks,NOK,NOKIA CORP-SPON ADR,661513,US6549022043,NYSE,1,ADR,IssuerCountryCode
 Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
-Trades,Data,Order,Stocks,USD,NOK,"2020-04-03, 09:48:58","-3200",2.995,2.97,-958.4,-1.6,960,0,-8,O
-Trades,Data,Order,Stocks,USD,NOK,"2020-04-06, 11:43:36",500,3.125,3.16,-1562.5,-2.5,1565,0,17.5,O
-Trades,Data,Order,Stocks,USD,NOK,"2020-04-06, 11:44:50","5,000",3.125,3.16,-6250,-10,6260,0,70,O;P
+Trades,Data,Order,Stocks,USD,NOK,"2020-04-03, 09:48:58","-3200",2.995,2.97,-958.4,-1.6,960,0,-8,O,US
+Trades,Data,Order,Stocks,USD,NOK,"2020-04-06, 11:43:36",500,3.125,3.16,-1562.5,-2.5,1565,0,17.5,O,US
+Trades,Data,Order,Stocks,USD,NOK,"2020-04-06, 11:44:50","5,000",3.125,3.16,-6250,-10,6260,0,70,O;P,US
 Trades,SubTotal,,Stocks,USD,NOK,,"2,299.81",,,-8770.9,-14.1,8785,0,79.5,"""
 
     lines = lines.split('\n')
 
-    p._settle_dates.put('NOK', _parse_datetime('2020-04-03, 09:48:58'), _parse_date('2020-02-04'), 'a')
-    p._settle_dates.put('NOK', _parse_datetime('2020-04-06, 11:43:36'), _parse_date('2020-02-12'), 'b')
-    p._settle_dates.put('NOK', _parse_datetime('2020-04-06, 11:44:50'), _parse_date('2020-02-12'), 'c')
+    p._settle_dates.put('NOK', parse_datetime('2020-04-03, 09:48:58'), parse_date('2020-02-04'), 'a', 'US')
+    p._settle_dates.put('NOK', parse_datetime('2020-04-06, 11:43:36'), parse_date('2020-02-12'), 'b', 'US')
+    p._settle_dates.put('NOK', parse_datetime('2020-04-06, 11:44:50'), parse_date('2020-02-12'), 'c', 'CS')
 
     p._real_parse_activity_csv(csv.reader(lines, delimiter=','), {
         'Financial Instrument Information': p._parse_instrument_information,
@@ -258,8 +258,8 @@ Trades,Data,Order,Stocks,USD,VT,"2020-02-10, 09:38:00",-10,81.82,82.25,818.2,-1.
 Trades,SubTotal,,Stocks,USD,VT,,0,,,12,-2.01812674,0,9.981873,-13.2,"""
 
     lines = lines.split('\n')
-    p._settle_dates.put('VT', _parse_datetime('2020-01-31, 09:30:00'), _parse_date('2020-02-04'), '')
-    p._settle_dates.put('VT', _parse_datetime('2020-02-10, 09:38:00'), _parse_date('2020-02-12'), '')
+    p._settle_dates.put('VT', parse_datetime('2020-01-31, 09:30:00'), parse_date('2020-02-04'), '')
+    p._settle_dates.put('VT', parse_datetime('2020-02-10, 09:38:00'), parse_date('2020-02-12'), '')
 
     p._real_parse_activity_csv(csv.reader(lines, delimiter=','), {
         'Financial Instrument Information': p._parse_instrument_information,
@@ -270,8 +270,8 @@ Trades,SubTotal,,Stocks,USD,VT,,0,,,12,-2.01812674,0,9.981873,-13.2,"""
 
     # buy trade
     assert p.trades[0].ticker.symbol == 'VT'
-    assert p.trades[0].trade_date == _parse_datetime('2020-01-31, 09:30:00')
-    assert p.trades[0].settle_date == _parse_date('2020-02-04')
+    assert p.trades[0].trade_date == parse_datetime('2020-01-31, 09:30:00')
+    assert p.trades[0].settle_date == parse_date('2020-02-04')
     assert p.trades[0].quantity == 10
     assert p.trades[0].price.amount == Decimal('80.62')
     assert p.trades[0].price.currency == Currency.USD
@@ -282,8 +282,8 @@ Trades,SubTotal,,Stocks,USD,VT,,0,,,12,-2.01812674,0,9.981873,-13.2,"""
 
     # sell trade
     assert p.trades[1].ticker.symbol == 'VT'
-    assert p.trades[1].trade_date == _parse_datetime('2020-02-10, 09:38:00')
-    assert p.trades[1].settle_date == _parse_date('2020-02-12')
+    assert p.trades[1].trade_date == parse_datetime('2020-02-10, 09:38:00')
+    assert p.trades[1].settle_date == parse_date('2020-02-12')
     assert p.trades[1].quantity == -10
     assert p.trades[1].price.amount == Decimal('81.82')
     assert p.trades[1].price.currency == Currency.USD
@@ -300,10 +300,10 @@ Trades,SubTotal,,Stocks,USD,VT,,0,,,12,-2.01812674,0,9.981873,-13.2,"""
 def test_parse_date(case: str, expected: Any):
     if expected is None:
         with pytest.raises(ValueError):
-            _parse_date(case)
+            parse_date(case)
 
     else:
-        res = _parse_date(case)
+        res = parse_date(case)
         assert res == expected
 
 
@@ -336,5 +336,5 @@ def test_group_confirmation_reports_by_order_id():
         i.order_id
         for i in p._settle_dates._settle_data.values()
     }
-    assert p._settle_dates.get_date('DXETd', _parse_datetime('2021-03-04,07:15:50')) == _parse_date('2021-03-09')
-    assert p._settle_dates.get_date('DXETd', _parse_datetime('2021-03-03,10:32:45')) == _parse_date('2021-03-05')
+    assert p._settle_dates.get_date('DXETd', parse_datetime('2021-03-04,07:15:50')) == parse_date('2021-03-09')
+    assert p._settle_dates.get_date('DXETd', parse_datetime('2021-03-03,10:32:45')) == parse_date('2021-03-05')

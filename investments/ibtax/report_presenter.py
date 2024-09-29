@@ -148,7 +148,7 @@ class NativeReportPresenter(ReportPresenter):
         dividends_presenter = dividends_by_year.copy(deep=True)
         if not self._verbose:
             apply_round_for_dataframe(dividends_presenter, {'rate'}, 4)
-            apply_round_for_dataframe(dividends_presenter, {'amount', 'amount_rub', 'tax_paid', 'tax_paid_rub'}, 2)
+            apply_round_for_dataframe(dividends_presenter, {'amount', 'amount_base_currency', 'tax_paid', 'tax_paid_base_currency'}, 2)
             dividends_presenter = dividends_presenter.drop(columns=['tax_rate'])
 
         self._start_new_page()
@@ -163,7 +163,7 @@ class NativeReportPresenter(ReportPresenter):
         feed_presenter = fees_by_year.copy(deep=True)
         if not self._verbose:
             apply_round_for_dataframe(feed_presenter, {'rate'}, 4)
-            apply_round_for_dataframe(feed_presenter, {'amount', 'amount_rub'}, 2)
+            apply_round_for_dataframe(feed_presenter, {'amount', 'amount_base_currency'}, 2)
 
         self._start_new_page()
         self._append_header('OTHER FEES')
@@ -177,7 +177,7 @@ class NativeReportPresenter(ReportPresenter):
         interests_presenter = interests_by_year.copy(deep=True)
         if not self._verbose:
             apply_round_for_dataframe(interests_presenter, {'rate'}, 4)
-            apply_round_for_dataframe(interests_presenter, {'amount', 'amount_rub'}, 2)
+            apply_round_for_dataframe(interests_presenter, {'amount', 'amount_base_currency'}, 2)
 
         self._start_new_page()
         self._append_header('INTERESTS')
@@ -233,7 +233,7 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
 
         trades_drop_col = ['price_rub', 'fee_per_piece_rub', 'total_rub', 'N', 'tax_year', 'fee_rate',
                            'profit_rub', 'fee_per_piece', 'settle_rate', 'settle_date', 'date']
-        dividend_drop_col = ['tax_year', 'N', 'rate', 'amount_rub', 'tax_paid_rub']
+        dividend_drop_col = ['tax_year', 'N']
 
         trades = trades.sort_values(by=['trade_date']).drop(columns=trades_drop_col, errors='ignore', axis=1)
         dividends = dividends.sort_values(by=['date']).drop(columns=dividend_drop_col, axis=1)
@@ -265,7 +265,7 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
         trades_header = trades.columns.tolist()
         trades_list = trades.values.tolist()  # type: list
 
-        dividends_order = ['date', 'ticker', 'eminent', 'amount', 'tax_paid', 'currency', 'isin']
+        dividends_order = ['date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency']
         dividends = dividends[dividends_order]
 
         dividends_header = dividends.columns.tolist()

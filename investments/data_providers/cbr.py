@@ -15,41 +15,31 @@ import requests
 
 from investments.currency import Currency
 from investments.data_providers.cache import DataFrameCache
+from investments.data_providers.exchange_provider import ExchangeRatesProvider
 from investments.money import Money
 
 
-class ExchangeRatesRUB:
-    _year_from: int
-    _cache_dir: Optional[str]
-    _frames_loaded: Dict[str, pandas.DataFrame]
+class ExchangeRatesRUB(ExchangeRatesProvider):
+    base_currency = Currency.RUB
 
     def __init__(self, year_from: int = 2000, cache_dir: Optional[str] = None):
+        super().__init__()
         self._year_from = year_from
         self._cache_dir = cache_dir
-        self._frames_loaded = {}
 
     def get_rate(self, currency: Currency, dt: datetime.datetime) -> Money:
-        if currency is Currency.RUB:
-            return Money(1, Currency.RUB)
+        logging.debug(f"Getting rate for {currency} for {dt}")
+        if currency is self.base_currency:
+            return Money(1, self.base_currency)
 
         if currency.name not in self._frames_loaded:
-            self._fetch_currency_rates(currency)
+            self._fetch_currency_rates(currency, dt)
 
         rates = self._frames_loaded.get(currency.name)
         assert rates is not None
-
         return rates.loc[dt].item()
 
-    def convert_to_rub(self, source: Money, rate_date: datetime.datetime) -> Money:
-        assert isinstance(rate_date, datetime.datetime)
-
-        if source.currency == Currency.RUB:
-            return Money(source.amount, Currency.RUB)
-
-        rate = self.get_rate(source.currency, rate_date)
-        return Money(source.amount * rate.amount, rate.currency)
-
-    def _fetch_currency_rates(self, currency: Currency):
+    def _fetch_currency_rates(self, currency: Currency, dt: datetime.datetime):
         """Загружаем курс запрошенной валюты из кеша или с cbr.ru."""
         cache_key = f'cbrates_{currency.cbr_code}_since{self._year_from}.cache'
         logging.info(f'load currency rates from cbr.ru {currency} {cache_key}')

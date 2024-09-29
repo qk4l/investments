@@ -13,3 +13,5 @@ class Investments(Exception):
         super(Exception, self).__init__(message)
 
 
+class InvestmentsTickerNotFound(Investments):
+    pass

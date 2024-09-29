@@ -36,7 +36,7 @@ class TickersStorageFR:
 
     def put(self, *, symbol: str, kind: TickerKind, name: str, isin: str, grn: str):
         name = name.strip().lower()
-        ticker = Ticker(symbol, kind)
+        ticker = Ticker(symbol=symbol, kind=kind)
         if ticker not in self._tickers:
             self._tickers.add(ticker)
 
@@ -70,7 +70,7 @@ class TickersStorageFR:
         if symbol is None:
             raise KeyError(f'unsupported dividend name "{name}"')
 
-        ticker = Ticker(symbol, TickerKind.Stock)
+        ticker = Ticker(symbol=symbol, kind=TickerKind.Stock)
         assert ticker in self._tickers, f'unknown ticker "{name}" {ticker}'
         return ticker
 

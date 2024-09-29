@@ -42,13 +42,13 @@ def test_convert_to_rub():
     assert expected_rate.amount == Decimal('77.7325')
 
     test_usd = Money(10.98, Currency.USD)
-    res = client_usd.convert_to_rub(test_usd, rate_date)
+    res = client_usd.convert_to_base_currency(test_usd, rate_date)
 
     assert res.amount == Decimal('853.50285')
     assert res.currency == Currency.RUB
 
     test_rub = Money(Decimal('858.3066'), Currency.RUB)
-    res = client_usd.convert_to_rub(test_rub, rate_date)
+    res = client_usd.convert_to_base_currency(test_rub, rate_date)
 
     assert res.amount == Decimal('858.3066')
     assert res.currency == Currency.RUB
