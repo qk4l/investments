@@ -41,8 +41,9 @@ class Ticker(object):
             return (
                     self.kind == other.kind and
                     self.security_id == other.security_id and
-                    self.multiplier == other.multiplier and
-                    self.conid == other.conid
+                    self.multiplier == other.multiplier
+                    # IB can change ID so do not use it
+                    # self.conid == other.conid
             )
         return False
 
@@ -52,6 +53,6 @@ class Ticker(object):
     def __lt__(self, other):
         if not isinstance(other, Ticker):
             return NotImplemented
-        # First compare by symbol, if they're equal, compare by security_id
+        # First, compare by symbol, if they're equal, compare by security_id
         return (self.symbol, self.security_id) < (other.symbol, other.security_id)
 

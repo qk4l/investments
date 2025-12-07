@@ -1,11 +1,10 @@
 import datetime
-from typing import NamedTuple
-
+from dataclasses import dataclass
 from investments.money import Money
 from investments.ticker import Ticker
 
-
-class Dividend(NamedTuple):
+@dataclass
+class Dividend:
     dtype: str
     ticker: Ticker
     date: datetime.date

@@ -149,7 +149,7 @@ class NativeReportPresenter(ReportPresenter):
         if not self._verbose:
             apply_round_for_dataframe(dividends_presenter, {'rate'}, 4)
             apply_round_for_dataframe(dividends_presenter, {'amount', 'amount_base_currency', 'tax_paid', 'tax_paid_base_currency'}, 2)
-            dividends_presenter = dividends_presenter.drop(columns=['tax_rate'])
+            # dividends_presenter = dividends_presenter.drop(columns=['tax_rate'])
 
         self._start_new_page()
         self._append_header('DIVIDENDS')
@@ -194,14 +194,14 @@ class NativeReportPresenter(ReportPresenter):
         trades_presenter['ticker_name'] = trades_presenter.apply(lambda x: str(x.name[1]), axis=1)
 
         trades_presenter = trades_presenter[[
-            'ticker_name', 'date', 'settle_date', 'quantity', 'price', 'fee_per_piece', 'price_rub',
-            'fee_per_piece_rub', 'fee', 'total', 'total_rub', 'settle_rate', 'fee_rate', 'profit_rub',
+            'ticker_name', 'date', 'settle_date', 'quantity', 'price', 'fee_per_piece', 'price_base_currency',
+            'fee_per_piece_base_currency', 'fee', 'total', 'total_base_currency', 'settle_rate', 'fee_rate', 'profit_base_currency',
         ]]
 
         if not self._verbose:
-            apply_round_for_dataframe(trades_presenter, {'price', 'total', 'total_rub', 'profit_rub'}, 2)
+            apply_round_for_dataframe(trades_presenter, {'price', 'total', 'total_base_currency', 'profit_base_currency'}, 2)
             apply_round_for_dataframe(trades_presenter, {'fee', 'settle_rate', 'fee_rate'}, 4)
-            trades_presenter = trades_presenter.drop(columns=['fee_per_piece', 'fee_per_piece_rub', 'price_rub'])
+            trades_presenter = trades_presenter.drop(columns=['fee_per_piece', 'fee_per_piece_base_currency', 'price_base_currency'])
 
         self._start_new_page()
         self._append_header('TRADES')
@@ -212,9 +212,9 @@ class NativeReportPresenter(ReportPresenter):
         trades_summary_presenter = trades_by_year.copy(deep=True).groupby(lambda idx: (
             trades_by_year.loc[idx, 'ticker'].kind,
             'expenses' if trades_by_year.loc[idx, 'quantity'] > 0 else 'income',
-        ))['total_rub'].sum().reset_index()
+        ))['total_base_currency'].sum().reset_index()
         trades_summary_presenter = trades_summary_presenter['index'].apply(pandas.Series).join(
-            trades_summary_presenter).pivot(index=0, columns=1, values='total_rub')
+            trades_summary_presenter).pivot(index=0, columns=1, values='total_base_currency')
         trades_summary_presenter.index.name = ''
         trades_summary_presenter.columns.name = ''
         trades_summary_presenter['profit'] = trades_summary_presenter['income'] + trades_summary_presenter['expenses']
@@ -231,8 +231,10 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
                        portfolio: List[PortfolioElement], filter_years: List[int]):
         google_api = GoogleAPI()
 
-        trades_drop_col = ['price_rub', 'fee_per_piece_rub', 'total_rub', 'N', 'tax_year', 'fee_rate',
-                           'profit_rub', 'fee_per_piece', 'settle_rate', 'settle_date', 'date']
+        # trades_drop_col = ['price_base_currency', 'fee_per_piece_base_currency', 'total_base_currency', 'N',
+        #                    'tax_year', 'fee_rate',
+        #                    'profit_base_currency', 'fee_per_piece', 'settle_rate', 'settle_date', 'date']
+        trades_drop_col = []
         dividend_drop_col = ['tax_year', 'N']
 
         trades = trades.sort_values(by=['trade_date']).drop(columns=trades_drop_col, errors='ignore', axis=1)
@@ -259,7 +261,9 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
                 elif isinstance(col_value, (datetime.date, datetime64)):
                     df[col_name] = df[col_name].apply(lambda x: x.strftime('%d.%m.%Y'))
 
-        trades_order = ['trade_date', 'ticker', 'eminent', 'quantity', 'price', 'fee', 'currency', 'isin']
+        trades_order = ['trade_date', 'ticker', 'eminent', 'quantity', 'price', 'price_base_currency',
+                        'fee',  'fee_per_piece', 'fee_per_piece_base_currency', 'currency', 'isin',
+                        'total', 'total_base_currency', 'profit_base_currency']
         trades = trades[trades_order]
 
         trades_header = trades.columns.tolist()

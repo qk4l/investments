@@ -1,6 +1,7 @@
 import datetime
 import logging
-from typing import Dict, List, Optional, Tuple
+import os
+from typing import Dict, Optional
 
 import pandas  # type: ignore
 
@@ -16,6 +17,8 @@ class ExchangeRatesProvider:
     def __init__(self, cache_dir: Optional[str] = None):
         self._frames_loaded = {}
         self._cache_dir = cache_dir
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
 
     def get_rate(self, currency: Currency, dt: datetime.datetime) -> Money:
         logging.debug(f"Getting rate for {currency} for {dt}")

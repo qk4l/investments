@@ -61,14 +61,14 @@ def test_simple_trades():
         3: Money('-726.48', Currency.USD),
         4: Money('817.181873260', Currency.USD)
     }
-    assert res['total_rub'] == {
+    assert res['total_base_currency'] == {
         0: Money('-35685.465590075', Currency.RUB),
         1: Money('36545.510403034', Currency.RUB),
         2: Money('-5097.923655725', Currency.RUB),
         3: Money('-46427.897088', Currency.RUB),
         4: Money('52258.44925955872', Currency.RUB)
     }
-    assert res['profit_rub'] == {
+    assert res['profit_base_currency'] == {
         0: Money(0, Currency.RUB),
         1: Money('860.044812959', Currency.RUB),
         2: Money(0, Currency.RUB),
@@ -87,12 +87,12 @@ def test_precision():
 
     res: dict = prepare_trades_report(test_case, ExchangeRatesRUB()).to_dict()
 
-    assert [x.amount for x in res['total_rub'].values()] == [
+    assert [x.amount for x in res['total_base_currency'].values()] == [
         Decimal('-51586.552320'),  # Расход: (80.62 * 10 * 63.9091) + (0.1 * 10 * 63.0359) = 51586.55232₽
         Decimal('52258.4492595587200'),  # Доход: (81.82 * 10 * 63.9490) - (0.101812674 * 10 * 63.4720) = 52258.4492595587200₽
     ]
 
-    assert [x.amount for x in res['profit_rub'].values()] == [
+    assert [x.amount for x in res['profit_base_currency'].values()] == [
         Decimal('0'),
         Decimal('671.8969395587200'),  # Финансовый результат: 52258.4492595587200 - 51586.552320 = 671.896939559₽
     ]

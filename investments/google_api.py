@@ -49,4 +49,4 @@ class GoogleAPI(object):
                 values=data
             )
         ).execute()
-        logger.debug(f'Sheet {spreadsheet_id} successfully Updated')
+        logger.debug(f'Sheet {spreadsheet_id} successfully Updated. Sheet range: {sheet_range}')

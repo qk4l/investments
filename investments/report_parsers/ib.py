@@ -85,8 +85,8 @@ class TickersStorage:
                 logging.warning(f"There are two Tickets with same symbols: {ticker} and {self._symbols[ticker.symbol]}")
                 logging.warning(f"Disable get_ticker_by_symbol() for that symbol")
                 self._symbols[ticker.symbol] = None
-                if ticker.symbol in self._conflict_symbols:
-                    self._conflict_symbols[ticker.symbol]
+                if ticker.symbol not in self._conflict_symbols:
+                    self._conflict_symbols[ticker.symbol] = ticker
             else:
                 self._symbols[ticker.symbol] = ticker
 
@@ -105,7 +105,7 @@ class TickersStorage:
             logging.info(f"Can not find Ticker by symbol {symbol}")
             logging.info(f"Check may be it is conflict symbol")
             if dt is not None and symbol in self._conflict_symbols:
-                ticker = self._conflict_symbols[symbol].get(dt.year, None)
+                ticker = self._conflict_symbols[symbol] # .get(dt.year, None)
                 if ticker is not None:
                     return ticker
             raise InvestmentsTickerNotFound(f"Failed to find ticker with symbol - {symbol}")
@@ -206,8 +206,25 @@ class InteractiveBrokersReportParser:
     def cash(self) -> List[Cash]:
         return self._cash
 
+    def get_dividends_to_date(self, ticker: Ticker, date: datetime.date) -> Optional[Dividend]:
+        exact_matches = [d for d in self._dividends if d.ticker == ticker and d.date == date]
+        if exact_matches:
+            return exact_matches[0]  # Assuming at most one per ticker per date
+
+        # Log if no exact match found
+        logging.info(f"No dividend found for {ticker} on requested date {date}")
+
+        # Find the most recent previous dividend
+        previous_divs = [d for d in self._dividends if d.ticker == ticker and d.date < date]
+        if not previous_divs:
+            return None
+
+        # Get the one with the maximum date
+        last_previous = max(previous_divs, key=lambda d: d.date)
+        return last_previous
+
     def parse_csv(self, *, activity_csvs: List[str], trade_confirmation_csvs: List[str]):
-        # 1. parse tickers info
+        # 1. parse ticker info
         for ac_fname in activity_csvs:
             with open(ac_fname, newline='') as ac_fh:
                 # logging.info(ac_fh.readline())
@@ -267,6 +284,8 @@ class InteractiveBrokersReportParser:
                 logging.warning(f"Corporate action {f['TransactionType']} for {f['Symbol']}. Currently unsupported")
                 continue
             symbol = f['Symbol']
+            if f['AssetClass'] == 'CASH':
+                continue
             operation_date = parse_datetime(f['Date/Time'])
             try:
                 ticker = self._tickers.get_ticker_by_symbol(symbol, dt=operation_date)
@@ -285,7 +304,7 @@ class InteractiveBrokersReportParser:
                                    )
 
     def _parse_statement(self, f: Dict[str, str]):
-        # Current we are interesting only in Period to resolve instrument's symbol duplication over time
+        # Currently we are interesting only in Period to resolve instrument's symbol duplication over time
         # Statement	Data	Period	January 1, 2020 - December 31, 2020
         if f['Field Name'] == 'Period':
             # January 1, 2020 - December 31, 2020
@@ -328,7 +347,7 @@ class InteractiveBrokersReportParser:
             security_id=f['Security ID'],
             exchange=f['Listing Exch'],
             issuer_country_code=f.get('IssuerCountryCode', '')
-        # period=self._current_parsed_period
+            # period=self._current_parsed_period
         )
 
     def _parse_trades(self, f: Dict[str, str]):
@@ -339,9 +358,6 @@ class InteractiveBrokersReportParser:
 
         dt = parse_datetime(f['Date/Time'])
 
-        # TODO: Remove
-        if f['Symbol'] in ('FRT', 'SPCE'):
-            return
         ticker = self._tickers.get_ticker_by_symbol(f['Symbol'], dt)
         currency = Currency.parse(f['Currency'])
 
@@ -367,35 +383,16 @@ class InteractiveBrokersReportParser:
         ))
 
     def _parse_withholding_tax(self, f: Dict[str, str]):
+        logging.debug(f'Parsing Withholding tax: {f}')
         div_symbol, div_security_id, div_type = _parse_dividend_description(f['Description'])
         ticker = self._tickers.get_ticker(div_symbol, div_security_id, TickerKind.Stock)
         date = parse_date(f['Date'])
         tax_amount = Money(f['Amount'], Currency.parse(f['Currency']))
 
-        tax_amount *= -1
-        found = False
-        for i, v in enumerate(self._dividends):
-            # difference in reports for the same past year, but generated in different time
-            # read more at https://github.com/cdump/investments/issues/17
-            cash_choice_hack = (v.dtype == 'Cash Dividend' and div_type == 'Choice Dividend')
-
-            if v.ticker == ticker and v.date == date and (v.dtype == div_type or cash_choice_hack):
-                assert v.amount.currency == tax_amount.currency
-                self._dividends[i] = Dividend(
-                    dtype=v.dtype,
-                    ticker=v.ticker,
-                    date=v.date,
-                    amount=v.amount,
-                    tax=v.tax + tax_amount,
-                )
-                found = True
-                break
-
-        if not found:
-            # TODO: REMOVE
-            if div_symbol == 'FRT' or div_symbol == 'WPC' or div_symbol == 'DLR':
-                return
+        dividend = self.get_dividends_to_date(ticker, date)
+        if dividend is None:
             raise Exception(f'Account {self.account}: dividend not found for {ticker} on {date}')
+        dividend.tax += tax_amount * -1
 
     def _parse_dividends(self, f: Dict[str, str]):
         div_symbol, div_security_id, div_type = _parse_dividend_description(f['Description'])

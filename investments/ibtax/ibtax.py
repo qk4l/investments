@@ -7,7 +7,6 @@ from typing import Dict, Iterable, List, Type
 import pandas  # type: ignore
 
 from investments.calculators import compute_total_cost
-from investments.currency import Currency
 from investments.data_providers import cbr, hmrc
 from investments.data_providers.exchange_provider import ExchangeRatesProvider
 from investments.defaults import BASE_CURRENCY
@@ -49,27 +48,27 @@ def prepare_trades_report(finished_trades: List[FinishedTrade],
     tax_years = df.groupby('N')[tax_date_column].max().map(lambda x: x.year).rename('tax_year')
     df = df.join(tax_years, how='left', on='N')
 
-    df['price_rub'] = df.apply(lambda x: exchange_rate_provider.convert_to_base_currency(x['price'], x[tax_date_column]), axis=1)
-    df['fee_per_piece_rub'] = df.apply(lambda x: exchange_rate_provider.convert_to_base_currency(x['fee_per_piece'], x[trade_date_column]), axis=1)
+    df['price_base_currency'] = df.apply(lambda x: exchange_rate_provider.convert_to_base_currency(x['price'], x[tax_date_column]), axis=1)
+    df['fee_per_piece_base_currency'] = df.apply(lambda x: exchange_rate_provider.convert_to_base_currency(x['fee_per_piece'], x[trade_date_column]), axis=1)
     df['fee'] = df.apply(lambda x: (x['fee_per_piece'] * abs(x['quantity'])), axis=1)
 
     df['total'] = df.apply(
         lambda x: compute_total_cost(x['quantity'], x['price'], x['fee_per_piece']),
         axis=1,
     )
-    df['total_rub'] = df.apply(
-        lambda x: compute_total_cost(x['quantity'], x['price_rub'], x['fee_per_piece_rub']),
+    df['total_base_currency'] = df.apply(
+        lambda x: compute_total_cost(x['quantity'], x['price_base_currency'], x['fee_per_piece_base_currency']),
         axis=1,
     )
 
     df['settle_rate'] = df.apply(lambda x: exchange_rate_provider.get_rate(x['price'].currency, x[tax_date_column]), axis=1)
     df['fee_rate'] = df.apply(lambda x: exchange_rate_provider.get_rate(x['fee_per_piece'].currency, x[trade_date_column]), axis=1)
-    df['profit_rub'] = df['total_rub']
+    df['profit_base_currency'] = df['total_base_currency']
 
-    profit = df.groupby('N')['profit_rub'].sum().reset_index().set_index('N')
+    profit = df.groupby('N')['profit_base_currency'].sum().reset_index().set_index('N')
     df = df.join(profit, how='left', on='N', lsuffix='_delete')
-    df.drop(columns=['profit_rub_delete'], axis=0, inplace=True)
-    df.loc[~df.index.isin(df.groupby('N')[trade_date_column].idxmax()), 'profit_rub'] = Money(0, Currency.RUB)
+    df.drop(columns=['profit_base_currency_delete'], axis=0, inplace=True)
+    df.loc[~df.index.isin(df.groupby('N')[trade_date_column].idxmax()), 'profit_base_currency'] = Money(0, exchange_rate_provider.base_currency)
 
     return df
 
@@ -163,13 +162,18 @@ def main() -> None:
     }
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--activity-reports-dir', type=str, required=True, help='directory with InteractiveBrokers .csv activity reports')
-    parser.add_argument('--confirmation-reports-dir', type=str, required=True, help='directory with InteractiveBrokers .csv confirmation reports')
-    parser.add_argument('--cache-dir', type=str, default='.', help='directory for caching (CBR RUB exchange rates)')
-    parser.add_argument('--years', type=lambda x: [int(v.strip()) for v in x.split(',')], default=[], help='comma separated years for final report, omit for all')
-    parser.add_argument('--verbose', nargs='?', default=False, const=True, help='do not "prune" reversed dividends, show dividends tax percent, disable rounding & etc.')
+    parser.add_argument('--activity-reports-dir', type=str, required=True,
+                        help='directory with InteractiveBrokers .csv activity reports')
+    parser.add_argument('--confirmation-reports-dir', type=str, required=True,
+                        help='directory with InteractiveBrokers .csv confirmation reports')
+    parser.add_argument('--cache-dir', type=str, default='.cache', help='directory for caching (CBR RUB exchange rates)')
+    parser.add_argument('--years', type=lambda x: [int(v.strip()) for v in x.split(',')], default=[],
+                        help='comma separated years for final report, omit for all')
+    parser.add_argument('--verbose', nargs='?', default=False, const=True,
+                        help='do not "prune" reversed dividends, show dividends tax percent, disable rounding & etc.')
     parser.add_argument('--quiet', nargs='?', default=False, const=True, help='suppress non-error messages')
-    parser.add_argument('--report-type', type=str, default='gspreadsheet', choices=available_report_types.keys(), help='report type [native by default]')
+    parser.add_argument('--report-type', type=str, default='gspreadsheet',
+                        choices=available_report_types.keys(), help='report type [native by default]')
     parser.add_argument('--save-to', type=str, default=None, help='filepath for save report')
 
     args = parser.parse_args()
@@ -200,6 +204,9 @@ def main() -> None:
         exchange_provider = hmrc.ExchangeRatesGBP(cache_dir=args.cache_dir)
     elif BASE_CURRENCY == 'RUB':
         exchange_provider = cbr.ExchangeRatesRUB(year_from=first_year, cache_dir=args.cache_dir)
+    else:
+        logging.error(f'unsupported BASE_CURRENCY={BASE_CURRENCY}')
+        sys.exit(1)
 
     dividends_report = prepare_dividends_report(dividends, exchange_provider, args.verbose) if dividends else None
     fees_report = prepare_fees_report(fees, exchange_provider, args.verbose) if fees else None
@@ -211,7 +218,8 @@ def main() -> None:
 
     # Upload all trades not only finished
     if args.report_type == 'gspreadsheet':
-        trades_report = pandas.DataFrame(trades)
+        # trades_report = pandas.DataFrame(trades)
+        trades_report = prepare_trades_report(finished_trades, exchange_provider) if finished_trades else None
     else:
         trades_report = prepare_trades_report(finished_trades, exchange_provider) if finished_trades else None
 
