@@ -23,6 +23,9 @@ class Trade:
     # комиссия за сделку
     fee: Money
 
+    # account ID from confirmation report
+    account_id: str = None
+
     # комиссия за сделку с одной бумагой, всегда отрицательная
     fee_per_piece: Money = None
 

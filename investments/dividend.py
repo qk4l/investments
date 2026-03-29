@@ -10,6 +10,7 @@ class Dividend:
     date: datetime.date
     amount: Money
     tax: Money
+    account_id: str = None
 
     def __str__(self):
         return f'{self.ticker}, {self.date} ({self.amount} tax:{self.tax})'

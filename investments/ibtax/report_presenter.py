@@ -42,7 +42,8 @@ class ReportPresenter(ABC):
     @abstractmethod
     def prepare_report(self, trades: Optional[pandas.DataFrame], dividends: Optional[pandas.DataFrame],
                        fees: Optional[pandas.DataFrame], interests: Optional[pandas.DataFrame],
-                       portfolio: List[PortfolioElement], filter_years: List[int]):  # noqa: WPS319
+                       portfolio: List[PortfolioElement], filter_years: List[int],
+                       all_trades: Optional[list] = None):  # noqa: WPS319
         pass
 
     def present(self):
@@ -107,7 +108,8 @@ class ReportPresenter(ABC):
 class NativeReportPresenter(ReportPresenter):
     def prepare_report(self, trades: Optional[pandas.DataFrame], dividends: Optional[pandas.DataFrame],
                        fees: Optional[pandas.DataFrame], interests: Optional[pandas.DataFrame],
-                       portfolio: List[PortfolioElement], filter_years: List[int]):  # noqa: WPS318,WPS319
+                       portfolio: List[PortfolioElement], filter_years: List[int],
+                       all_trades: Optional[list] = None):  # noqa: WPS318,WPS319
         years = set()
         for report in (trades, dividends, fees, interests):
             if report is not None:
@@ -226,9 +228,14 @@ class NativeReportPresenter(ReportPresenter):
 
 
 class GoogleSpeadSheetPresenter(ReportPresenter):
+    def __init__(self, verbose: bool = False, dst_filepath: Optional[str] = None, date_format: str = '%d.%m.%Y', account_id: Optional[str] = None):
+        super().__init__(verbose, dst_filepath, date_format)
+        self._account_id = account_id
+
     def prepare_report(self, trades: Optional[pandas.DataFrame], dividends: Optional[pandas.DataFrame],
                        fees: Optional[pandas.DataFrame], interests: Optional[pandas.DataFrame],
-                       portfolio: List[PortfolioElement], filter_years: List[int]):
+                       portfolio: List[PortfolioElement], filter_years: List[int],
+                       all_trades: Optional[list] = None):
         google_api = GoogleAPI()
 
         # trades_drop_col = ['price_base_currency', 'fee_per_piece_base_currency', 'total_base_currency', 'N',
@@ -239,6 +246,26 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
 
         trades = trades.sort_values(by=['trade_date']).drop(columns=trades_drop_col, errors='ignore', axis=1)
         dividends = dividends.sort_values(by=['date']).drop(columns=dividend_drop_col, axis=1)
+
+        # Check if account_id exists in the data (from CSV files)
+        has_account_id = 'account_id' in trades.columns and trades['account_id'].notna().any()
+
+        if has_account_id:
+            print(f"✓ account_id column found in trades data")
+        else:
+            print(f"✗ account_id column NOT found or empty in trades data")
+            if 'account_id' in trades.columns:
+                print(f"  Column exists but values are: {trades['account_id'].unique()}")
+
+        # Check if account_id exists in dividends
+        has_dividends_account_id = 'account_id' in dividends.columns and dividends['account_id'].notna().any()
+        if has_dividends_account_id:
+            print(f"✓ account_id column found in dividends data")
+        else:
+            print(f"✗ account_id column NOT found or empty in dividends data")
+
+        # Add action column (buy/sell) based on quantity
+        trades['action'] = trades['quantity'].apply(lambda x: 'buy' if x > 0 else 'sell')
 
         trades['isin'] = trades['ticker'].apply(lambda x: x.security_id)
         trades['eminent'] = trades['ticker'].apply(lambda x: x.description)
@@ -261,7 +288,10 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
                 elif isinstance(col_value, (datetime.date, datetime64)):
                     df[col_name] = df[col_name].apply(lambda x: x.strftime('%d.%m.%Y'))
 
-        trades_order = ['trade_date', 'ticker', 'eminent', 'quantity', 'price', 'price_base_currency',
+        trades_order = ['account_id', 'trade_date', 'action', 'ticker', 'eminent', 'quantity', 'price', 'price_base_currency',
+                        'fee',  'fee_per_piece', 'fee_per_piece_base_currency', 'currency', 'isin',
+                        'total', 'total_base_currency', 'profit_base_currency'] if has_account_id else \
+                       ['trade_date', 'action', 'ticker', 'eminent', 'quantity', 'price', 'price_base_currency',
                         'fee',  'fee_per_piece', 'fee_per_piece_base_currency', 'currency', 'isin',
                         'total', 'total_base_currency', 'profit_base_currency']
         trades = trades[trades_order]
@@ -269,7 +299,8 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
         trades_header = trades.columns.tolist()
         trades_list = trades.values.tolist()  # type: list
 
-        dividends_order = ['date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency']
+        dividends_order = ['account_id', 'date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency'] if has_dividends_account_id else \
+                         ['date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency']
         dividends = dividends[dividends_order]
 
         dividends_header = dividends.columns.tolist()
@@ -294,3 +325,37 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
                               sheet_range='IB_Dividends')
         google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=portfolio_list,
                               sheet_range='IB_Portfolio')
+
+        # Create IB_All_Trades sheet with all trades (including open positions)
+        if all_trades:
+            all_trades_df = pandas.DataFrame(all_trades)
+            all_trades_df = all_trades_df.sort_values(by=['trade_date'])
+
+            # Check if account_id exists in all_trades data
+            has_all_trades_account_id = 'account_id' in all_trades_df.columns and all_trades_df['account_id'].notna().any()
+
+            # Add action column (buy/sell) based on quantity
+            all_trades_df['action'] = all_trades_df['quantity'].apply(lambda x: 'buy' if x > 0 else 'sell')
+
+            all_trades_df['isin'] = all_trades_df['ticker'].apply(lambda x: x.security_id)
+            all_trades_df['eminent'] = all_trades_df['ticker'].apply(lambda x: x.description)
+            all_trades_df['ticker'] = all_trades_df['ticker'].apply(lambda x: x.symbol)
+            all_trades_df['currency'] = all_trades_df['price'].apply(lambda x: str(x.currency))
+
+            for col_name in all_trades_df.keys():
+                col_value = all_trades_df[col_name].values[0]
+                if isinstance(col_value, Money):
+                    all_trades_df[col_name] = all_trades_df[col_name].apply(lambda x: float(x.amount))
+                elif isinstance(col_value, (datetime.date, datetime64)):
+                    all_trades_df[col_name] = all_trades_df[col_name].apply(lambda x: x.strftime('%d.%m.%Y'))
+
+            all_trades_order = ['account_id', 'trade_date', 'settle_date', 'action', 'ticker', 'eminent', 'quantity', 'price', 'fee', 'currency', 'isin'] if has_all_trades_account_id else \
+                               ['trade_date', 'settle_date', 'action', 'ticker', 'eminent', 'quantity', 'price', 'fee', 'currency', 'isin']
+            all_trades_df = all_trades_df[all_trades_order]
+
+            all_trades_header = all_trades_df.columns.tolist()
+            all_trades_list = all_trades_df.values.tolist()  # type: list
+            all_trades_list.insert(0, all_trades_header)
+
+            google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=all_trades_list,
+                                  sheet_range='IB_All_Trades')

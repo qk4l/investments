@@ -24,7 +24,10 @@ def parse_date(strval: str) -> datetime.date:
 
 
 def _parse_trade_quantity(strval: str) -> int:
-    return int(strval.replace(',', ''))
+    try:
+        return int(strval.replace(',', ''))
+    except ValueError:
+        raise ValueError(f"Failed for convert str to int for {strval} ")
 
 
 def _parse_dividend_description(description: str) -> Tuple[str, str, str]:
@@ -126,6 +129,7 @@ class TickersStorage:
 class SettleDate(NamedTuple):
     order_id: str
     settle_date: datetime.date
+    account_id: str = None
 
 
 class SettleDatesStorage:
@@ -141,12 +145,13 @@ class SettleDatesStorage:
             operation_date: datetime,
             settle_date: datetime.date,
             order_id: str,
+            account_id: str = None,
     ):
         existing_item = self.get(symbol, operation_date)
         if existing_item:
             if existing_item.settle_date != settle_date and existing_item.order_id != order_id:
                 raise AssertionError(f'Duplicate settle date for key {(symbol, operation_date)} with {order_id}')
-        self._settle_data[(symbol, operation_date)] = SettleDate(order_id, settle_date)
+        self._settle_data[(symbol, operation_date)] = SettleDate(order_id, settle_date, account_id)
 
     def get(
             self,
@@ -170,6 +175,7 @@ class InteractiveBrokersReportParser:
     def __init__(self) -> None:
         self.account: str
         self.account_type: str
+        self._confirmation_account_ids: set = set()
         self._trades: List[Trade] = []
         self._dividends: List[Dividend] = []
         self._fees: List[Fee] = []
@@ -224,7 +230,7 @@ class InteractiveBrokersReportParser:
         return last_previous
 
     def parse_csv(self, *, activity_csvs: List[str], trade_confirmation_csvs: List[str]):
-        # 1. parse ticker info
+        # 1. parse ticker info and account information
         for ac_fname in activity_csvs:
             with open(ac_fname, newline='') as ac_fh:
                 # logging.info(ac_fh.readline())
@@ -237,11 +243,17 @@ class InteractiveBrokersReportParser:
                 self._real_parse_activity_csv(csv.reader(ac_fh, delimiter=','), {
                     'Financial Instrument Information': self._parse_instrument_information,
                 })
+                ac_fh.seek(0)
+                self._real_parse_activity_csv(csv.reader(ac_fh, delimiter=','), {
+                    'Account Information': self._parse_account_information,
+                })
+                logging.info(f"After parsing account info from {ac_fname}: account={getattr(self, 'account', 'NOT SET')}")
 
-        # 2. parse settle_date from trade confirmation
+        # 2. parse settle_date and account_id from trade confirmation
         for tc_fname in trade_confirmation_csvs:
             with open(tc_fname, newline='') as tc_fh:
                 self._parse_trade_confirmation_csv(csv.reader(tc_fh, delimiter=','))
+        logging.info(f"After parsing confirmations: {len(self._settle_dates)} settle dates, confirmation_account_ids={self._confirmation_account_ids}")
 
         # 3. parse everything else from activity (trades, dividends, ...)
         for activity_fname in activity_csvs:
@@ -252,7 +264,6 @@ class InteractiveBrokersReportParser:
                     'Dividends': self._parse_dividends,
                     'Withholding Tax': self._parse_withholding_tax,
                     'Deposits & Withdrawals': self._parse_deposits,
-                    'Account Information': self._parse_account_information,
                     # 'Cash Report', 'Change in Dividend Accruals', 'Change in NAV',
                     # 'Codes',
                     'Fees': self._parse_fees,
@@ -276,6 +287,11 @@ class InteractiveBrokersReportParser:
         parser.parse_header(next(csv_reader))
         for row in csv_reader:
             f = parser.parse(row)
+
+            # Track ClientAccountID from confirmation reports
+            if 'ClientAccountID' in f and f['ClientAccountID']:
+                self._confirmation_account_ids.add(f['ClientAccountID'])
+
             if f['LevelOfDetail'] != 'EXECUTION':
                 continue
             if f['TransactionType'] == 'TradeCancel':
@@ -300,7 +316,8 @@ class InteractiveBrokersReportParser:
                         ticker.issuer_country_code = f['IssuerCountryCode']
             self._settle_dates.put(symbol=symbol,
                                    operation_date=operation_date, settle_date=parse_date(f['SettleDate']),
-                                   order_id=f['OrderID']
+                                   order_id=f['OrderID'],
+                                   account_id=f.get('ClientAccountID')
                                    )
 
     def _parse_statement(self, f: Dict[str, str]):
@@ -361,7 +378,15 @@ class InteractiveBrokersReportParser:
         ticker = self._tickers.get_ticker_by_symbol(f['Symbol'], dt)
         currency = Currency.parse(f['Currency'])
 
-        settle_date = self._settle_dates.get_date(ticker.symbol, dt)
+        settle_info = self._settle_dates.get(ticker.symbol, dt)
+        settle_date = settle_info.settle_date if settle_info else None
+
+        # Get account_id: prefer from confirmation report, fallback to activity report
+        if settle_info and settle_info.account_id:
+            account_id = settle_info.account_id
+        else:
+            account_id = getattr(self, 'account', None)
+
         try:
             assert settle_date is not None
         except AssertionError:
@@ -373,13 +398,20 @@ class InteractiveBrokersReportParser:
                 return
             raise
 
+        try:
+            trade_quantity = _parse_trade_quantity(f['Quantity'])
+            quantity = trade_quantity * ticker.multiplier
+        except ValueError:
+            logging.warning(f"Skip trade for {ticker.symbol}, quantity is {f['Quantity']}. Failed to convert to int")
+            return
         self._trades.append(Trade(
             ticker=ticker,
             trade_date=dt,
             settle_date=settle_date,
-            quantity=_parse_trade_quantity(f['Quantity']) * ticker.multiplier,
+            quantity=quantity,
             price=Money(f['T. Price'], currency),
             fee=Money(f['Comm/Fee'], currency),
+            account_id=account_id,
         ))
 
     def _parse_withholding_tax(self, f: Dict[str, str]):
@@ -399,6 +431,7 @@ class InteractiveBrokersReportParser:
         ticker = self._tickers.get_ticker(div_symbol, div_security_id, TickerKind.Stock)
         date = parse_date(f['Date'])
         amount = Money(f['Amount'], Currency.parse(f['Currency']))
+        account_id = getattr(self, 'account', None)
 
         if amount.amount < 0:
             assert 'Reversal' in f['Description'], f'unsupported dividend with negative amount: {f}'
@@ -410,6 +443,7 @@ class InteractiveBrokersReportParser:
                         date=date,
                         amount=amount + v.amount,
                         tax=v.tax,
+                        account_id=account_id,
                     )
                     return
 
@@ -420,6 +454,7 @@ class InteractiveBrokersReportParser:
             date=date,
             amount=amount,
             tax=Money(0, amount.currency),
+            account_id=account_id,
         ))
 
     def _parse_deposits(self, f: Dict[str, str]):

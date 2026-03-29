@@ -5,7 +5,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas
 
 from investments.calculators import compute_total_cost
-from investments.currency import Currency
 from investments.money import Money
 from investments.ticker import Ticker
 from investments.trade import Trade, FinishedTrade
@@ -51,7 +50,8 @@ class TradesAnalyzer:
                                                trade_date=matched_trade.trade_date,
                                                settle_date=matched_trade.settle_date,
                                                quantity=q, price=matched_trade.price,
-                                               fee=matched_trade.fee
+                                               fee=matched_trade.fee,
+                                               account_id=matched_trade.account_id
                                                )
 
                 self._finished_trades.append(finished_trade)
