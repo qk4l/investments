@@ -67,7 +67,8 @@ class Money:
         return -1 * self.__sub__(other)
 
     def __mul__(self, mul):
-        if isinstance(mul, int):
+        # Decimal is allowed for fractional share quantities and corporate action ratios
+        if isinstance(mul, (int, Decimal)):
             return Money(self._amount * mul, self._currency)
         return NotImplemented
 
@@ -75,7 +76,7 @@ class Money:
         return self.__mul__(mul)
 
     def __truediv__(self, d):
-        if isinstance(d, int):
+        if isinstance(d, (int, Decimal)):
             return Money(self._amount / d, self._currency)
 
         if isinstance(d, Money):

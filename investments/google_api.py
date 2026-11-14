@@ -1,7 +1,9 @@
 import logging
+import math
 import pathlib
 import os
 import pickle
+from decimal import Decimal
 from typing import List, Any
 
 from googleapiclient.discovery import build
@@ -39,7 +41,13 @@ class GoogleAPI(object):
 
         return result_input.get('values', [])
 
-    def set_values(self, spreadsheet_id, sheet_range: str, data: List[str | Any]):
+    def set_values(self, spreadsheet_id, sheet_range: str, data: List[str | Any], clear_below: bool = True):
+        """Write rows starting at A1 of `sheet_range` (a sheet name).
+
+        With `clear_below` the rows left from a previous longer upload are cleared,
+        only in the columns written now (formulas in columns to the right stay untouched).
+        """
+        data = [[_to_cell(v) for v in row] for row in data]
         self.service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             valueInputOption='RAW',
@@ -50,3 +58,26 @@ class GoogleAPI(object):
             )
         ).execute()
         logger.debug(f'Sheet {spreadsheet_id} successfully Updated. Sheet range: {sheet_range}')
+
+        if clear_below and data and '!' not in sheet_range:
+            last_column = _column_letter(max(len(row) for row in data))
+            stale_range = f'{sheet_range}!A{len(data) + 1}:{last_column}'
+            self.service.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range=stale_range, body={}).execute()
+            logger.debug(f'Cleared stale rows {stale_range}')
+
+
+def _to_cell(value: Any) -> Any:
+    """Make values JSON serializable for the Sheets API."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, float) and math.isnan(value):
+        return ''
+    return value
+
+
+def _column_letter(n: int) -> str:
+    letters = ''
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(ord('A') + rem) + letters
+    return letters

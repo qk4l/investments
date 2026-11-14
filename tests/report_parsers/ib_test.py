@@ -338,3 +338,57 @@ def test_group_confirmation_reports_by_order_id():
     }
     assert p._settle_dates.get_date('DXETd', parse_datetime('2021-03-04,07:15:50')) == parse_date('2021-03-09')
     assert p._settle_dates.get_date('DXETd', parse_datetime('2021-03-03,10:32:45')) == parse_date('2021-03-05')
+
+
+def test_parse_activity_skips_section_repeated_with_code_column():
+    p = InteractiveBrokersReportParser()
+
+    lines = """Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,USD,2025-01-06,PEP(US7134481081) Cash Dividend USD 1.355 per Share (Ordinary Dividend),8.13
+Dividends,Data,USD,2025-01-06,PEP(US7134481081) Cash Dividend USD 1.355 per Share (Ordinary Dividend),8.13
+Dividends,Data,Total,,,16.26
+Dividends,Header,Currency,Date,Description,Amount,Code
+Dividends,Data,USD,2025-01-06,PEP(US7134481081) Cash Dividend USD 1.355 per Share (Ordinary Dividend),8.13,
+Dividends,Data,USD,2025-03-31,PEP(US7134481081) Cash Dividend USD 1.355 per Share (Ordinary Dividend),8.13,
+Dividends,Data,Total,,,16.26,"""
+
+    parsed = []
+    p._real_parse_activity_csv(csv.reader(lines.split('\n')), {'Dividends': parsed.append})
+
+    # both identical rows of the first block are kept, the repeated one from the second block is skipped
+    assert [(x['Date'], x['Amount']) for x in parsed] == [
+        ('2025-01-06', '8.13'),
+        ('2025-01-06', '8.13'),
+        ('2025-03-31', '8.13'),
+    ]
+
+
+def test_parse_corporate_actions():
+    p = InteractiveBrokersReportParser()
+    p.account = 'U1'
+    lines = """Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code
+Financial Instrument Information,Data,Stocks,UL,UNILEVER PLC-SPONSORED ADR,1,US9047678035,NYSE,1,ADR,
+Financial Instrument Information,Data,Stocks,20251208172441UL,UNILEVER PLC-SPONSORED ADR,2,US9047677045,NYSE,1,ADR,
+Financial Instrument Information,Data,Stocks,MICC,MAGNUM ICE CREAM CO BV/THE,3,NL0015002MS2,NYSE,1,COMMON,
+Financial Instrument Information,Data,Stocks,CIO,CITY OFFICE REIT INC,4,US1785871013,NYSE,1,REIT,
+Corporate Actions,Header,Asset Category,Currency,Report Date,Date/Time,Description,Quantity,Proceeds,Value,Realized P/L,Code
+Corporate Actions,Data,Stocks,USD,2025-12-08,"2025-12-05, 20:25:00","UL(US9047677045) Spinoff  1 for 5 (MICC, MAGNUM ICE CREAM CO BV/THE, NL0015002MS2)",3.6,0,0,0,
+Corporate Actions,Data,Stocks,USD,2025-12-09,"2025-12-08, 20:25:00","UL(US9047677045) Split 8 for 9 (20251208172441UL, UNILEVER PLC-SPONSORED ADR, US9047677045)",-18,0,0,0,
+Corporate Actions,Data,Stocks,USD,2025-12-09,"2025-12-08, 20:25:00","UL(US9047677045) Split 8 for 9 (UL, UNILEVER PLC-SPONSORED ADR, US9047678035)",16,0,0,0,
+Corporate Actions,Data,Stocks,USD,2026-01-12,"2026-01-09, 20:25:00","CIO(US1785871013) Merged(Acquisition) for USD 7.00 per Share (CIO, CITY OFFICE REIT INC, US1785871013)",-36,252,-251.64,-114.95,
+Corporate Actions,Data,Total,,,,,,0,0,0,"""
+    rows = list(csv.reader(lines.split('\n')))
+    p._real_parse_activity_csv(iter(rows), {'Financial Instrument Information': p._parse_instrument_information})
+    p._real_parse_activity_csv(iter(rows), {'Corporate Actions': p._parse_corporate_action_row})
+    p._build_corporate_actions()
+
+    kinds = [(a.kind.value, a.source.security_id, a.target.security_id, a.quantity) for a in p.corporate_actions]
+    assert kinds == [
+        ('spinoff', 'US9047677045', 'NL0015002MS2', Decimal('3.6')),
+        ('conversion', 'US9047677045', 'US9047678035', 16),
+    ]
+    # cash takeover becomes a sell trade
+    assert [(t.ticker.symbol, t.quantity, t.price) for t in p.trades] == [('CIO', -36, Money(7, Currency.USD))]
+    # trades in symbol UL before the split belong to the old ISIN, after it - to the new one
+    assert p._resolve_ticker_by_symbol('UL', datetime.datetime(2025, 1, 1)).security_id == 'US9047677045'
+    assert p._resolve_ticker_by_symbol('UL', datetime.datetime(2026, 1, 1)).security_id == 'US9047678035'

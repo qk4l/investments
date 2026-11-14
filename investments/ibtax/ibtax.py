@@ -6,6 +6,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Type
 
@@ -436,6 +437,18 @@ def download_flex_reports(reports_dir: str = "./ib_reports") -> int:
     return 0 if total_failed == 0 else 1
 
 
+def _parse_spinoff_allocation(value: str) -> Dict[str, Decimal]:
+    """Parse "MICC=0.12,OGN=0.05" into {symbol: share of the parent's cost}."""
+    result: Dict[str, Decimal] = {}
+    for item in filter(None, (x.strip() for x in value.split(','))):
+        symbol, share = item.split('=', 1)
+        fraction = Decimal(share.strip())
+        if not 0 <= fraction <= 1:
+            raise argparse.ArgumentTypeError(f'spinoff cost allocation must be between 0 and 1: {item}')
+        result[symbol.strip()] = fraction
+    return result
+
+
 def csvs_in_dir(directory: str):
     ret = []
     for filename in os.scandir(directory):
@@ -522,6 +535,10 @@ def main() -> None:
     parser.add_argument('--report-type', type=str, default='gspreadsheet',
                         choices=available_report_types.keys(), help='report type [native by default]')
     parser.add_argument('--save-to', type=str, default=None, help='filepath for save report')
+    parser.add_argument('--spinoff-cost-allocation', type=_parse_spinoff_allocation,
+                        default=_parse_spinoff_allocation(os.getenv('IBTAX_SPINOFF_COST_ALLOCATION', '')),
+                        help='share of the parent cost moved to spinoff shares, e.g. "MICC=0.12,OGN=0.05" '
+                             '(default: env IBTAX_SPINOFF_COST_ALLOCATION, otherwise zero cost for spinoff shares)')
 
     args = parser.parse_args()
 
@@ -571,7 +588,9 @@ def main() -> None:
     fees_report = prepare_fees_report(fees, exchange_provider, args.verbose) if fees else None
     interests_report = prepare_interests_report(interests, exchange_provider) if interests else None
 
-    analyzer = TradesAnalyzer(trades)
+    for action in parser_object.corporate_actions:
+        logging.info(f'Corporate action: {action}')
+    analyzer = TradesAnalyzer(trades, parser_object.corporate_actions, args.spinoff_cost_allocation)
     finished_trades = analyzer.finished_trades
     portfolio = analyzer.final_portfolio
 

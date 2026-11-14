@@ -1,10 +1,13 @@
 import csv
 import logging
 import re
-from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple, Callable
+from collections import defaultdict
+from decimal import Decimal, InvalidOperation
+from typing import Dict, Iterator, List, NamedTuple, Optional, Tuple, Callable, Union
 
 from datetime import datetime
 from investments.cash import Cash
+from investments.corporate_action import CorporateAction, CorporateActionKind
 from investments.currency import Currency
 from investments.dividend import Dividend
 from investments.exceptions import InvestmentsTickerNotFound
@@ -23,11 +26,20 @@ def parse_date(strval: str) -> datetime.date:
     return datetime.strptime(strval, '%Y-%m-%d').date()
 
 
-def _parse_trade_quantity(strval: str) -> int:
+def _parse_trade_quantity(strval: str) -> Union[int, Decimal]:
+    """Whole quantities stay int, fractional ones (cash in lieu, spinoffs) become Decimal."""
     try:
-        return int(strval.replace(',', ''))
-    except ValueError:
-        raise ValueError(f"Failed for convert str to int for {strval} ")
+        value = Decimal(strval.replace(',', ''))
+    except InvalidOperation:
+        raise ValueError(f"Failed for convert str to number for {strval} ")
+    return int(value) if value == value.to_integral_value() else value
+
+
+# "...(MICC, MAGNUM ICE CREAM CO BV/THE, NL0015002MS2)" - instrument affected by a corporate action row
+_CA_TARGET_RE = re.compile(r'\(([^,()]+), (.*), ([A-Z0-9]{12})\)\s*$')
+# "UL(US9047677045) Spinoff ..." / "ME8U (SG2C32962814) Stock Dividend ..." - instrument the action is about
+_CA_SOURCE_RE = re.compile(r'^\s*([^\s(]*)\s*\(([A-Z0-9]{12})\)')
+_CA_SPLIT_RE = re.compile(r'Split (\d+) for (\d+)')
 
 
 def _parse_dividend_description(description: str) -> Tuple[str, str, str]:
@@ -184,6 +196,10 @@ class InteractiveBrokersReportParser:
         self._deposits_and_withdrawals: List[Tuple[datetime.date, Money]] = []
         self._tickers = TickersStorage()
         self._settle_dates = SettleDatesStorage()
+        self._corporate_actions: List[CorporateAction] = []
+        self._corporate_action_rows: Dict[tuple, Dict[str, str]] = {}
+        # symbol -> [(date, ticker before, ticker after)] for symbols reused by a new ISIN (splits, ISIN changes)
+        self._symbol_changes: Dict[str, List[Tuple[datetime, Ticker, Ticker]]] = defaultdict(list)
 
     def __repr__(self):
         return f'IbParser(trades={len(self.trades)}, dividends={len(self.dividends)}, fees={len(self.fees)}, interests={len(self.interests)})'  # noqa: WPS221
@@ -191,6 +207,10 @@ class InteractiveBrokersReportParser:
     @property
     def trades(self) -> List[Trade]:
         return self._trades
+
+    @property
+    def corporate_actions(self) -> List[CorporateAction]:
+        return self._corporate_actions
 
     @property
     def dividends(self) -> List[Dividend]:
@@ -249,6 +269,14 @@ class InteractiveBrokersReportParser:
                 })
                 logging.info(f"After parsing account info from {ac_fname}: account={getattr(self, 'account', 'NOT SET')}")
 
+        # 1.1 corporate actions (need all instruments; must be known before trades to resolve reused symbols)
+        for ca_fname in activity_csvs:
+            with open(ca_fname, newline='') as ca_fh:
+                self._real_parse_activity_csv(csv.reader(ca_fh, delimiter=','), {
+                    'Corporate Actions': self._parse_corporate_action_row,
+                }, source=ca_fname)
+        self._build_corporate_actions()
+
         # 2. parse settle_date and account_id from trade confirmation
         for tc_fname in trade_confirmation_csvs:
             with open(tc_fname, newline='') as tc_fh:
@@ -273,10 +301,11 @@ class InteractiveBrokersReportParser:
                     # 'Net Asset Value', 'Notes/Legal Notes', 'Open Positions', 'Realized & Unrealized Performance Summary',
                     # 'Statement', '\ufeffStatement', 'Total P/L for Statement Period', 'Transaction Fees',
                     'Cash Report': self._parse_cash_report,
-                })
+                }, source=activity_fname)
 
         # 4. sort
         self._trades.sort(key=lambda x: x.trade_date)
+        self._corporate_actions.sort(key=lambda x: x.date)
         self._dividends.sort(key=lambda x: x.date)
         self._interests.sort(key=lambda x: x.date)
         self._deposits_and_withdrawals.sort(key=lambda x: x[0])
@@ -332,8 +361,15 @@ class InteractiveBrokersReportParser:
                 datetime.strptime(end_period.strip(), date_format)
             )
 
-    def _real_parse_activity_csv(self, csv_reader: Iterator[List[str]], parsers: Dict[str, Callable]):
+    def _real_parse_activity_csv(self, csv_reader: Iterator[List[str]], parsers: Dict[str, Callable], source: str = ''):
         nrparser = NamedRowsParser()
+        # A statement template with both "Combined Dividends" and optional "Dividends" sections repeats
+        # the dividends a second time (with an extra 'Code' column). Rows already seen in an earlier block
+        # of the same section are skipped and reported, so totals are not doubled; identical rows inside
+        # one block are kept as they may be legitimate.
+        seen_rows: Dict[str, set] = {}
+        block_rows: Dict[str, set] = {}
+        skipped: Dict[str, int] = defaultdict(int)
         for row in csv_reader:
             try:
                 parser_fn = parsers[row[0]]
@@ -341,8 +377,10 @@ class InteractiveBrokersReportParser:
                 # raise Exception(f'Unknown data {row}')
                 continue
 
+            section = row[0]
             if row[1] == 'Header':
                 nrparser.parse_header(row[2:])
+                seen_rows.setdefault(section, set()).update(block_rows.pop(section, set()))
                 continue
 
             if row[1] in {'Total', 'SubTotal', 'Notes'} or row[2].startswith('Total'):
@@ -350,9 +388,21 @@ class InteractiveBrokersReportParser:
 
             if row[1] == 'Data':
                 fields = nrparser.parse(row[2:])
+                row_key = frozenset((k, v) for k, v in fields.items() if k not in {'Code', ''})
+                if row_key in seen_rows.get(section, set()):
+                    logging.debug(f'Skip duplicated {section} row: {fields}')
+                    skipped[section] += 1
+                    continue
+                block_rows.setdefault(section, set()).add(row_key)
                 parser_fn(fields)
             else:
                 raise Exception(f'Unknown data {row}')
+
+        for section, count in skipped.items():
+            logging.warning(
+                f'{source}: section "{section}" is repeated in the statement, {count} duplicated rows skipped. '
+                f'Check the IB statement template (e.g. both "Combined Dividends" and optional "Dividends" enabled).'
+            )
 
     def _parse_instrument_information(self, f: Dict[str, str]):
         self._tickers.put(
@@ -375,10 +425,10 @@ class InteractiveBrokersReportParser:
 
         dt = parse_datetime(f['Date/Time'])
 
-        ticker = self._tickers.get_ticker_by_symbol(f['Symbol'], dt)
+        ticker = self._resolve_ticker_by_symbol(f['Symbol'], dt)
         currency = Currency.parse(f['Currency'])
 
-        settle_info = self._settle_dates.get(ticker.symbol, dt)
+        settle_info = self._settle_dates.get(f['Symbol'], dt) or self._settle_dates.get(ticker.symbol, dt)
         settle_date = settle_info.settle_date if settle_info else None
 
         # Get account_id: prefer from confirmation report, fallback to activity report
@@ -388,22 +438,19 @@ class InteractiveBrokersReportParser:
             account_id = getattr(self, 'account', None)
 
         try:
-            assert settle_date is not None
-        except AssertionError:
-            if ticker.exchange == 'CORPACT':
-                logging.warning(f'Skipping CORPACT trade (not supported yet), your final report may be incorrect! {f}')
-                return
-            if 'spinoff' in ticker.description.lower():
-                logging.warning(f'Skipping SPINOFF trade (not supported yet), your final report may be incorrect! {f}')
-                return
-            raise
-
-        try:
             trade_quantity = _parse_trade_quantity(f['Quantity'])
             quantity = trade_quantity * ticker.multiplier
         except ValueError:
-            logging.warning(f"Skip trade for {ticker.symbol}, quantity is {f['Quantity']}. Failed to convert to int")
+            logging.warning(f"Skip trade for {ticker.symbol}, quantity is {f['Quantity']}. Failed to parse quantity")
             return
+
+        if settle_date is None:
+            # Cash in lieu of fractional shares after corporate actions has no settle date in confirmations
+            is_corpact = ticker.exchange == 'CORPACT' or 'spinoff' in ticker.description.lower() or isinstance(quantity, Decimal)
+            if not is_corpact:
+                raise AssertionError(f'settle date not found for trade {f}')
+            logging.info(f'No settle date for corporate action related trade, using trade date: {f}')
+            settle_date = dt.date()
         self._trades.append(Trade(
             ticker=ticker,
             trade_date=dt,
@@ -456,6 +503,114 @@ class InteractiveBrokersReportParser:
             tax=Money(0, amount.currency),
             account_id=account_id,
         ))
+
+    def _resolve_ticker_by_symbol(self, symbol: str, dt: datetime) -> Ticker:
+        """Symbol lookup aware of splits / ISIN changes that reuse the same symbol for a new ISIN."""
+        changes = self._symbol_changes.get(symbol)
+        if changes:
+            ticker = changes[0][1]
+            for change_date, before, after in sorted(changes, key=lambda x: x[0]):
+                ticker = before if dt < change_date else after
+                if dt < change_date:
+                    break
+            return ticker
+        return self._tickers.get_ticker_by_symbol(symbol, dt)
+
+    def _parse_corporate_action_row(self, f: Dict[str, str]):
+        if f['Asset Category'] != 'Stocks' or not f.get('Date/Time'):
+            return
+        # the same action may be present in overlapping statements
+        key = (f['Date/Time'], f['Description'], f['Quantity'])
+        self._corporate_action_rows.setdefault(key, f)
+
+    def _corporate_action_ticker(self, symbol: str, isin: str, name: str) -> Ticker:
+        try:
+            return self._tickers.get_ticker(symbol, isin, TickerKind.Stock)
+        except (KeyError, InvestmentsTickerNotFound):
+            logging.info(f'Instrument {symbol} ({isin}) from corporate actions is not in instrument information, adding it')
+            self._tickers.put(symbol=symbol, conid=f'CA:{isin}', description=name, kind=TickerKind.Stock,
+                              multiplier=1, security_id=isin, exchange='CORPACT', issuer_country_code='')
+            return self._tickers.get_ticker(symbol, isin, TickerKind.Stock)
+
+    def _corporate_action_trade(self, ticker: Ticker, dt: datetime, quantity, price: Money, f: Dict[str, str]):
+        self._trades.append(Trade(
+            ticker=ticker, trade_date=dt, settle_date=dt.date(), quantity=quantity, price=price,
+            fee=Money(0, price.currency), account_id=getattr(self, 'account', None),
+        ))
+
+    def _build_corporate_actions(self):  # noqa: C901, WPS231
+        groups: Dict[tuple, List[Dict[str, str]]] = defaultdict(list)
+        for f in self._corporate_action_rows.values():
+            prefix = _CA_TARGET_RE.sub('', f['Description']).strip()
+            groups[(f['Date/Time'], prefix)].append(f)
+
+        for (dt_str, prefix), rows in sorted(groups.items()):
+            dt = parse_datetime(dt_str)
+            items = []
+            for f in rows:
+                m = _CA_TARGET_RE.search(f['Description'])
+                if m is None:
+                    logging.warning(f'Unsupported corporate action description, skipped: {f}')
+                    continue
+                ticker = self._corporate_action_ticker(m.group(1), m.group(3), m.group(2))
+                items.append((f, ticker, _parse_trade_quantity(f['Quantity'])))
+            if not items:
+                continue
+            currency = Currency.parse(items[0][0]['Currency'])
+            source_m = _CA_SOURCE_RE.match(prefix)
+            prefix_symbol = source_m.group(1) if source_m else ''
+
+            if 'Merged(Acquisition) for' in prefix:
+                # cash takeover -> disposal of the whole position
+                for f, ticker, qty in items:
+                    proceeds = Decimal(f['Proceeds'].replace(',', ''))
+                    self._corporate_action_trade(ticker, dt, qty, Money(proceeds / abs(qty), currency), f)
+                    logging.info(f'Corporate action: cash takeover {ticker} {qty} for {proceeds} {currency}')
+
+            elif 'Stock Dividend' in prefix or 'Rights Issue' in prefix:
+                # new shares / rights received at zero cost
+                for f, ticker, qty in items:
+                    self._corporate_action_trade(ticker, dt, qty, Money(0, currency), f)
+                if 'Stock Dividend' in prefix:
+                    logging.warning(f'Corporate action: stock dividend {prefix} added with zero cost basis, review its tax treatment')
+
+            elif 'Delisted' in prefix:
+                # removed without proceeds (lapsed rights, worthless shares)
+                for f, ticker, qty in items:
+                    self._corporate_action_trade(ticker, dt, qty, Money(0, currency), f)
+
+            elif 'Spinoff' in prefix:
+                parent = self._tickers.get_ticker(source_m.group(1), source_m.group(2), TickerKind.Stock) if source_m else None
+                for f, child, qty in items:
+                    assert parent is not None, f'can not find spinoff parent for {f}'
+                    self._corporate_actions.append(CorporateAction(
+                        kind=CorporateActionKind.SPINOFF, date=dt, source=parent, target=child,
+                        quantity=qty, description=prefix,
+                    ))
+
+            elif 'Split' in prefix or 'CUSIP/ISIN Change' in prefix or 'Merged(Acquisition) WITH' in prefix:
+                removed = [(t, q) for _, t, q in items if q < 0]
+                added = [(t, q) for _, t, q in items if q > 0]
+                if len(removed) == 1 and len(added) == 1:
+                    (before, old_qty), (after, new_qty) = removed[0], added[0]
+                    self._corporate_actions.append(CorporateAction(
+                        kind=CorporateActionKind.CONVERSION, date=dt, source=before, target=after,
+                        ratio=Decimal(new_qty) / Decimal(abs(old_qty)), quantity=new_qty, description=prefix,
+                    ))
+                    symbols = {prefix_symbol, before.symbol} | ({after.symbol} if after.symbol == prefix_symbol else set())
+                    for symbol in filter(None, symbols):
+                        self._symbol_changes[symbol].append((dt, before, after))
+                elif not removed and len(added) == 1 and (split_m := _CA_SPLIT_RE.search(prefix)):
+                    # split reported as a single row with the additional shares
+                    ticker = added[0][0]
+                    self._corporate_actions.append(CorporateAction(
+                        kind=CorporateActionKind.CONVERSION, date=dt, source=ticker, target=ticker,
+                        ratio=Decimal(split_m.group(1)) / Decimal(split_m.group(2)), description=prefix,
+                    ))
+                else:
+                    logging.warning(f'Unsupported corporate action layout, skipped: {prefix} {rows}')
+            else:
+                logging.warning(f'Unsupported corporate action, skipped, your final report may be incorrect: {prefix}')
 
     def _parse_deposits(self, f: Dict[str, str]):
         currency = Currency.parse(f['Currency'])
