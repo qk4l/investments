@@ -114,6 +114,9 @@ class TickersStorage:
         ticker_in_storage = self._tickers[ticker.security_id]  # type: Ticker
         assert ticker_in_storage == ticker
 
+    def all_tickers(self) -> List[Ticker]:
+        return list(self._tickers.values())
+
     def get_ticker_by_symbol(self, symbol: str, dt: datetime = None) -> Ticker:
         ticker = self._symbols.get(symbol, None)
         if ticker is None:
@@ -197,6 +200,7 @@ class InteractiveBrokersReportParser:
         self._tickers = TickersStorage()
         self._settle_dates = SettleDatesStorage()
         self._corporate_actions: List[CorporateAction] = []
+        self._instrument_types: Dict[str, str] = {}  # security_id -> IB instrument type (COMMON, ADR, ETF, ...)
         self._corporate_action_rows: Dict[tuple, Dict[str, str]] = {}
         # symbol -> [(date, ticker before, ticker after)] for symbols reused by a new ISIN (splits, ISIN changes)
         self._symbol_changes: Dict[str, List[Tuple[datetime, Ticker, Ticker]]] = defaultdict(list)
@@ -282,6 +286,7 @@ class InteractiveBrokersReportParser:
             with open(tc_fname, newline='') as tc_fh:
                 self._parse_trade_confirmation_csv(csv.reader(tc_fh, delimiter=','))
         logging.info(f"After parsing confirmations: {len(self._settle_dates)} settle dates, confirmation_account_ids={self._confirmation_account_ids}")
+        self._fill_issuer_countries()
 
         # 3. parse everything else from activity (trades, dividends, ...)
         for activity_fname in activity_csvs:
@@ -333,8 +338,11 @@ class InteractiveBrokersReportParser:
                 continue
             operation_date = parse_datetime(f['Date/Time'])
             try:
-                ticker = self._tickers.get_ticker_by_symbol(symbol, dt=operation_date)
-            except InvestmentsTickerNotFound:
+                # ISIN first: a symbol may belong to several ISINs (splits, ISIN changes)
+                isin = f.get('ISIN') or f.get('SecurityID') or ''
+                ticker = self._tickers.get_ticker(symbol, isin, TickerKind.Stock) if isin else \
+                    self._tickers.get_ticker_by_symbol(symbol, dt=operation_date)
+            except (InvestmentsTickerNotFound, KeyError):
                 pass
             else:
                 if f.get('IssuerCountryCode', ''):
@@ -404,7 +412,29 @@ class InteractiveBrokersReportParser:
                 f'Check the IB statement template (e.g. both "Combined Dividends" and optional "Dividends" enabled).'
             )
 
+    def _fill_issuer_countries(self):
+        """Fill issuer country for instruments not covered by trade confirmations."""
+        # the same issuer before/after a split or ISIN change (not a merger into another company)
+        for action in self._corporate_actions:
+            if action.kind is CorporateActionKind.CONVERSION and 'Merged' not in action.description:
+                src, dst = action.source, action.target
+                if src.issuer_country_code and not dst.issuer_country_code:
+                    dst.issuer_country_code = src.issuer_country_code
+                elif dst.issuer_country_code and not src.issuer_country_code:
+                    src.issuer_country_code = dst.issuer_country_code
+
+        # fallback: ISIN country prefix, but not for depositary receipts (ADR ISIN country is the ADR's, not the issuer's)
+        for ticker in self._tickers.all_tickers():
+            if ticker.issuer_country_code or len(ticker.security_id) != 12 or not ticker.security_id[:2].isalpha():
+                continue
+            if self._instrument_types.get(ticker.security_id, '') in {'ADR', 'GDR'}:
+                logging.warning(f'Issuer country of {ticker} is unknown (depositary receipt, not traded in confirmations)')
+                continue
+            ticker.issuer_country_code = ticker.security_id[:2]
+            logging.info(f'Issuer country of {ticker} taken from ISIN: {ticker.issuer_country_code}')
+
     def _parse_instrument_information(self, f: Dict[str, str]):
+        self._instrument_types[f['Security ID']] = f.get('Type', '')
         self._tickers.put(
             symbol=f['Symbol'],
             conid=f['Conid'],
