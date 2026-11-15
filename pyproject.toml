@@ -42,6 +42,7 @@ dev = [
 ibtax = "investments.ibtax.ibtax:main"
 ibdds = "investments.ibdds.ibdds:main"
 ib-flex-download = "investments.ib_flex_downloader:main"
+portfolio-report = "investments.portfolio_report:main"
 
 [dependency-groups]
 dev = [

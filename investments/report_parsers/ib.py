@@ -509,7 +509,7 @@ class InteractiveBrokersReportParser:
         tax_country = _WITHHOLDING_COUNTRY_RE.search(f['Description'])
         if tax_country:
             if dividend.tax_country and dividend.tax_country != tax_country.group(1):
-                logging.warning(f'{ticker} {date}: tax withheld by both {dividend.tax_country} and {tax_country.group(1)}')
+                logging.info(f'{ticker} {date}: tax withheld by both {dividend.tax_country} and {tax_country.group(1)}')
             dividend.tax_country = dividend.tax_country or tax_country.group(1)
 
     def _parse_dividends(self, f: Dict[str, str]):
