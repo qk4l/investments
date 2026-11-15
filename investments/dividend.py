@@ -11,6 +11,8 @@ class Dividend:
     amount: Money
     tax: Money
     account_id: str = None
+    # country that withheld the tax ("... - CA Tax" in IB statements); used for Foreign Tax Credit Relief
+    tax_country: str = ''
 
     def __str__(self):
         return f'{self.ticker}, {self.date} ({self.amount} tax:{self.tax})'

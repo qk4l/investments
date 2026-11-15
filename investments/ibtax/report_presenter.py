@@ -46,6 +46,9 @@ class ReportPresenter(ABC):
                        all_trades: Optional[list] = None):  # noqa: WPS319
         pass
 
+    def prepare_uk_cgt_report(self, disposals: pandas.DataFrame, summary: pandas.DataFrame, filter_years: List[int]):
+        """UK CGT disposals matched by the share identification rules (GBP base currency only)."""
+
     def present(self):
         if self.is_print_mode():
             print(self._output)
@@ -134,6 +137,24 @@ class NativeReportPresenter(ReportPresenter):
                 self._append_interests_report(interests, year)
 
         self._append_portfolio_report(portfolio)
+
+    def prepare_uk_cgt_report(self, disposals: pandas.DataFrame, summary: pandas.DataFrame, filter_years: List[int]):
+        if disposals.empty:
+            return
+        # --years 2025 selects the UK tax year 2025-26
+        tax_years = {f'{y}-{(y + 1) % 100:02d}' for y in filter_years}
+        if tax_years:
+            disposals = disposals[disposals['tax_year'].isin(tax_years)]
+            summary = summary[summary['tax_year'].isin(tax_years)]
+
+        self._start_new_page()
+        self._append_header('UK CAPITAL GAINS (same day / 30 days / section 104), SA108 listed shares')
+        self._append_output(self._append_table(summary))
+        for year in sorted(disposals['tax_year'].unique()):
+            self._append_header(f'UK CGT DISPOSALS {year}')
+            self._append_output(self._append_table(
+                disposals[disposals['tax_year'] == year].drop(columns=['tax_year', 'account_id', 'eminent']),
+            ))
 
     def _append_portfolio_report(self, portfolio: List[PortfolioElement]):
         self._start_new_page()
@@ -299,8 +320,8 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
         trades_header = trades.columns.tolist()
         trades_list = trades.values.tolist()  # type: list
 
-        dividends_order = ['account_id', 'date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency'] if has_dividends_account_id else \
-                         ['date', 'ticker', 'issuer_country_code', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency']
+        dividends_order = ['account_id', 'date', 'ticker', 'tax_country', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency'] if has_dividends_account_id else \
+                         ['date', 'ticker', 'tax_country', 'eminent', 'amount', 'tax_paid', 'currency', 'isin', 'rate', 'amount_base_currency', 'tax_paid_base_currency']
         dividends = dividends[dividends_order]
 
         dividends_header = dividends.columns.tolist()
@@ -359,3 +380,15 @@ class GoogleSpeadSheetPresenter(ReportPresenter):
 
             google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=all_trades_list,
                                   sheet_range='IB_All_Trades')
+
+    def prepare_uk_cgt_report(self, disposals: pandas.DataFrame, summary: pandas.DataFrame, filter_years: List[int]):
+        google_api = GoogleAPI()
+        for sheet, df in (('IB_UK_CGT', disposals), ('IB_UK_CGT_Summary', summary)):
+            if df.empty:
+                continue
+            df = df.copy()
+            if 'date' in df.columns:
+                df['date'] = df['date'].apply(lambda x: x.strftime(self._date_format))
+            data = [df.columns.tolist()] + df.values.tolist()
+            google_api.ensure_sheet(GOOGLE_SHEET_ID, sheet)
+            google_api.set_values(spreadsheet_id=GOOGLE_SHEET_ID, data=data, sheet_range=sheet)

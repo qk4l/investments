@@ -392,3 +392,22 @@ Corporate Actions,Data,Total,,,,,,0,0,0,"""
     # trades in symbol UL before the split belong to the old ISIN, after it - to the new one
     assert p._resolve_ticker_by_symbol('UL', datetime.datetime(2025, 1, 1)).security_id == 'US9047677045'
     assert p._resolve_ticker_by_symbol('UL', datetime.datetime(2026, 1, 1)).security_id == 'US9047678035'
+
+
+def test_withholding_tax_country_differs_from_issuer_country():
+    p = InteractiveBrokersReportParser()
+    p.account = 'U1'
+    lines = """Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code
+Financial Instrument Information,Data,Stocks,BEPC,BROOKFIELD RENEWABLE CORP,751356948,CA11285B1085,NYSE,1,COMMON,
+Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,USD,2025-06-30,BEPC (CA11285B1085) Cash Dividend USD 0.373 (Ordinary Dividend),14.92
+Withholding Tax,Header,Currency,Date,Description,Amount,Code
+Withholding Tax,Data,USD,2025-06-30,BEPC (CA11285B1085) Cash Dividend USD 0.373 - CA Tax,-2.24,"""
+    rows = list(csv.reader(lines.split('\n')))
+    p._real_parse_activity_csv(iter(rows), {'Financial Instrument Information': p._parse_instrument_information})
+    p._real_parse_activity_csv(iter(rows), {'Dividends': p._parse_dividends, 'Withholding Tax': p._parse_withholding_tax})
+
+    dividend, = p.dividends
+    dividend.ticker.issuer_country_code = 'US'  # as reported in IB trade confirmations
+    assert dividend.tax == Money('2.24', Currency.USD)
+    assert dividend.tax_country == 'CA'

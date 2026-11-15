@@ -25,6 +25,7 @@ from investments.interests import Interest
 from investments.money import Money
 from investments.report_parsers.ib import InteractiveBrokersReportParser
 from investments.trades_fifo import FinishedTrade, TradesAnalyzer
+from investments.uk_cgt import UKCapitalGainsCalculator, uk_disposals_report, uk_tax_year_summary
 
 
 def apply_round_for_dataframe(source: pandas.DataFrame, columns: Iterable, digits: int = 2) -> pandas.DataFrame:
@@ -85,8 +86,10 @@ def prepare_dividends_report(dividends: List[Dividend], exchange_rate_provider: 
     if not verbose:
         dividends = [x for x in dividends if x.amount.amount != 0 or x.tax.amount != 0]  # remove reversed dividends
 
-    df_data = [(i + 1, x.ticker, x.ticker.issuer_country_code, pandas.to_datetime(x.date), x.amount, x.tax, x.account_id) for i, x in enumerate(dividends)]
-    df = pandas.DataFrame(df_data, columns=['N', 'ticker', 'issuer_country_code', 'date', 'amount', 'tax_paid', 'account_id'])
+    # tax_country: the country that withheld the tax, otherwise the issuer country (for SA106 Foreign pages)
+    df_data = [(i + 1, x.ticker, x.tax_country or x.ticker.issuer_country_code,
+                pandas.to_datetime(x.date), x.amount, x.tax, x.account_id) for i, x in enumerate(dividends)]
+    df = pandas.DataFrame(df_data, columns=['N', 'ticker', 'tax_country', 'date', 'amount', 'tax_paid', 'account_id'])
 
     df['tax_year'] = df[operation_date_column].map(lambda x: x.year)
     df['rate'] = df.apply(lambda x: exchange_rate_provider.get_rate(x['amount'].currency, x[operation_date_column]), axis=1)
@@ -606,6 +609,12 @@ def main() -> None:
     else:
         presenter = available_report_types[args.report_type](args.verbose, args.save_to)
     presenter.prepare_report(trades_report, dividends_report, fees_report, interests_report, portfolio, args.years, all_trades=trades)
+
+    if args.base_currency == 'GBP':
+        calculator = UKCapitalGainsCalculator(exchange_provider, args.spinoff_cost_allocation)
+        uk_disposals = calculator.calculate(trades, parser_object.corporate_actions)
+        presenter.prepare_uk_cgt_report(uk_disposals_report(uk_disposals), uk_tax_year_summary(uk_disposals), args.years)
+
     presenter.present()
 
 

@@ -41,6 +41,15 @@ class GoogleAPI(object):
 
         return result_input.get('values', [])
 
+    def ensure_sheet(self, spreadsheet_id: str, title: str):
+        """Create the sheet (tab) if the spreadsheet does not have it yet."""
+        meta = self.sheet.get(spreadsheetId=spreadsheet_id, fields='sheets.properties.title').execute()
+        if title in {s['properties']['title'] for s in meta.get('sheets', [])}:
+            return
+        self.sheet.batchUpdate(spreadsheetId=spreadsheet_id,
+                               body={'requests': [{'addSheet': {'properties': {'title': title}}}]}).execute()
+        logger.info(f'Sheet {title} created')
+
     def set_values(self, spreadsheet_id, sheet_range: str, data: List[str | Any], clear_below: bool = True):
         """Write rows starting at A1 of `sheet_range` (a sheet name).
 

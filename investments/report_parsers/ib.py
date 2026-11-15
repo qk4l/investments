@@ -40,6 +40,7 @@ _CA_TARGET_RE = re.compile(r'\(([^,()]+), (.*), ([A-Z0-9]{12})\)\s*$')
 # "UL(US9047677045) Spinoff ..." / "ME8U (SG2C32962814) Stock Dividend ..." - instrument the action is about
 _CA_SOURCE_RE = re.compile(r'^\s*([^\s(]*)\s*\(([A-Z0-9]{12})\)')
 _CA_SPLIT_RE = re.compile(r'Split (\d+) for (\d+)')
+_WITHHOLDING_COUNTRY_RE = re.compile(r'- ([A-Z]{2}) Tax\s*$')
 
 
 def _parse_dividend_description(description: str) -> Tuple[str, str, str]:
@@ -503,6 +504,14 @@ class InteractiveBrokersReportParser:
             raise Exception(f'Account {self.account}: dividend not found for {ticker} on {date}')
         dividend.tax += tax_amount * -1
 
+        # "BEPC (CA11285B1085) Cash Dividend USD 0.373 - CA Tax": the country that withheld the tax,
+        # which may differ from the issuer country reported by IB
+        tax_country = _WITHHOLDING_COUNTRY_RE.search(f['Description'])
+        if tax_country:
+            if dividend.tax_country and dividend.tax_country != tax_country.group(1):
+                logging.warning(f'{ticker} {date}: tax withheld by both {dividend.tax_country} and {tax_country.group(1)}')
+            dividend.tax_country = dividend.tax_country or tax_country.group(1)
+
     def _parse_dividends(self, f: Dict[str, str]):
         div_symbol, div_security_id, div_type = _parse_dividend_description(f['Description'])
         ticker = self._tickers.get_ticker(div_symbol, div_security_id, TickerKind.Stock)
@@ -521,6 +530,7 @@ class InteractiveBrokersReportParser:
                         amount=amount + v.amount,
                         tax=v.tax,
                         account_id=account_id,
+                        tax_country=v.tax_country,
                     )
                     return
 
